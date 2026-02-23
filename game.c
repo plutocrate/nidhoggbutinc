@@ -381,20 +381,26 @@ static void render_player(const Player *p, float cam_x, bool debug) {
         int hip_y      = sy + h - h / 3;
         int shoulder_y = sy + h / 3;
         int mid_x      = sx;
+        float s        = world_scale() * g_cam_zoom;
 
-        DrawLine(mid_x, hip_y, mid_x - 7, foot_y, cur_color);
-        DrawLine(mid_x, hip_y, mid_x + 7, foot_y, cur_color);
+        int leg_spread  = (int)(7.0f * s);
+        int arm_reach   = (int)((p->crouching ? 8.0f : 14.0f) * s);
+        int arm_drop    = (int)(10.0f * s);
+        int head_r      = (int)(9.0f * s);
+        if (head_r < 3) head_r = 3;
+
+        DrawLine(mid_x, hip_y, mid_x - leg_spread, foot_y, cur_color);
+        DrawLine(mid_x, hip_y, mid_x + leg_spread, foot_y, cur_color);
         DrawLine(mid_x, hip_y, mid_x, shoulder_y, cur_color);
 
-        int arm_reach   = p->crouching ? 8 : 14;
         int sword_arm_x = mid_x + p->facing * arm_reach;
-        int sword_arm_y = shoulder_y + 10;
+        int sword_arm_y = shoulder_y + arm_drop;
         DrawLine(mid_x, shoulder_y, sword_arm_x, sword_arm_y, cur_color);
-        int off_arm_x = mid_x - p->facing * 8;
-        DrawLine(mid_x, shoulder_y, off_arm_x, sword_arm_y + 4, cur_color);
+        int off_arm_x = mid_x - p->facing * (int)(8.0f * s);
+        DrawLine(mid_x, shoulder_y, off_arm_x, sword_arm_y + (int)(4.0f * s), cur_color);
 
-        DrawCircle(mid_x, sy + 8, 9, cur_color);
-        DrawCircle(mid_x + p->facing * 4, sy + 7, 2, (Color){20, 20, 40, 255});
+        DrawCircle(mid_x, sy + head_r, head_r, cur_color);
+        DrawCircle(mid_x + p->facing * (int)(4.0f * s), sy + (int)(7.0f * s), (int)(2.0f * s) + 1, (Color){20, 20, 40, 255});
 
         (void)w;
     } else {
