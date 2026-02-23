@@ -125,6 +125,7 @@ void game_fixed_update(GameState *gs) {
     }
 
     if (gs->phase == PHASE_ROUND_OVER) {
+        if (gs->mode != MODE_LOCAL) net_update(&gs->net, gs->frame);
         gs->round_over_timer--;
         if (gs->round_over_timer <= 0) {
             if (gs->players[0].score >= WIN_SCORE || gs->players[1].score >= WIN_SCORE) {
@@ -169,15 +170,27 @@ void game_fixed_update(GameState *gs) {
 
         NetStatePacket sp;
         if (net_recv_state(&gs->net, &sp)) {
-            // CLIENT: only apply authoritative state to the REMOTE player (p0).
-            // Never overwrite our own (p1) state – that causes the snap/glitch.
+            // CLIENT: apply authoritative remote player state
             PlayerSync s0 = sp.p0;
             player_from_sync(&gs->players[0], &s0);
-            // Preserve local player's live simulation; only update scores.
+
+            // Apply authoritative scores
             gs->players[0].score = sp.p0_score;
             gs->players[1].score = sp.p1_score;
-            // Sync death / respawn state for local player from authoritative source
-            // but don't overwrite position/velocity (anti-glitch).
+
+            // Apply authoritative game phase from host
+            GamePhase host_phase = (GamePhase)sp.game_state;
+            if (host_phase == PHASE_ROUND_OVER && gs->phase == PHASE_PLAYING) {
+                gs->phase = PHASE_ROUND_OVER;
+                gs->round_over_timer = 180;
+                // winner is whoever has more score
+                gs->winner_id = (gs->players[0].score > gs->players[1].score) ? 0 : 1;
+            } else if (host_phase == PHASE_MATCH_OVER && gs->phase != PHASE_MATCH_OVER) {
+                gs->phase = PHASE_MATCH_OVER;
+                gs->winner_id = (gs->players[0].score >= WIN_SCORE) ? 0 : 1;
+            }
+
+            // Sync local player death from authoritative source
             if (sp.p1.state == (uint8_t)STATE_DEAD && gs->players[1].state != STATE_DEAD) {
                 player_kill(&gs->players[1]);
             }
@@ -238,11 +251,12 @@ void game_fixed_update(GameState *gs) {
 
     update_camera(&gs->cam, &gs->players[0], &gs->players[1]);
 
-    // Host sends authoritative state every 2 frames
+    // Host sends authoritative state - every frame during phase transitions, every 2 frames otherwise
     if (gs->mode == MODE_HOST && net_is_connected(&gs->net)) {
         static int state_send_counter = 0;
         state_send_counter++;
-        if (state_send_counter % 2 == 0) {
+        bool force_send = (gs->phase == PHASE_ROUND_OVER || gs->phase == PHASE_MATCH_OVER);
+        if (force_send || state_send_counter % 2 == 0) {
             NetStatePacket sp;
             sp.header.type  = PKT_STATE;
             sp.header.frame = gs->frame;
