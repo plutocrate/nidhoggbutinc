@@ -207,9 +207,20 @@ void combat_update_thrown_swords(ThrowingSword *swords, int num_swords,
             }
         }
 
-        // Out of bounds
-        if (s->pos.x < -3000.0f || s->pos.x > 3000.0f) {
-            s->active = false;
+        // Arena wall rebound: match the ±2000 bounds used by physics_update.
+        // Reverse horizontal velocity with a small energy loss, spin reverses
+        // to match the new direction, and the sword is nudged back inside so it
+        // doesn't tunnel through on the next frame.
+        #define ARENA_BOUND 2000.0f
+        #define WALL_RESTITUTION 0.75f   // fraction of speed kept after bounce
+        if (s->pos.x < -ARENA_BOUND) {
+            s->pos.x    = -ARENA_BOUND;
+            s->vel.x    = fabsf(s->vel.x) * WALL_RESTITUTION;   // reflect rightward
+            s->angle_vel = -s->angle_vel * WALL_RESTITUTION;
+        } else if (s->pos.x > ARENA_BOUND) {
+            s->pos.x    = ARENA_BOUND;
+            s->vel.x    = -fabsf(s->vel.x) * WALL_RESTITUTION;  // reflect leftward
+            s->angle_vel = -s->angle_vel * WALL_RESTITUTION;
         }
     }
 }
