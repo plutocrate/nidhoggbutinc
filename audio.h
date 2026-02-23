@@ -11,16 +11,20 @@ typedef struct PlayerAudioState {
     int  footstep_timer;    // frames until next footstep
     bool was_on_ground;     // for jump trigger (ground -> air transition)
     PlayerState prev_state; // for attack/parry entry detection
+    bool prev_has_sword;    // for pickup detection
 } PlayerAudioState;
 
 typedef struct AudioState {
     Sound sfx_whoosh;       // sword swing
     Sound sfx_hit;          // sword hits body (death blow)
-    Sound sfx_parry;        // parry clang
+    Sound sfx_parry_clash;  // perfect parry / sword clash (BaseMetal)
+    Sound sfx_parry_normal; // normal parry deflect (PullingWeapon)
     Sound sfx_grunt_attack; // attacker grunt
     Sound sfx_grunt_death;  // death scream
     Sound sfx_footstep;     // footstep
     Sound sfx_jump;         // jump
+    Sound sfx_throw;        // sword throw
+    Sound sfx_pickup;       // sword pickup (clink)
 
     PlayerAudioState players[2];
     bool initialized;
