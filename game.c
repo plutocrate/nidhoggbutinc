@@ -189,11 +189,11 @@ void game_fixed_update(GameState *gs) {
 
         NetStatePacket sp;
         if (net_recv_state(&gs->net, &sp)) {
-            // Apply authoritative state for BOTH players from host every packet
+            // Apply authoritative state for REMOTE player (p0) only.
+            // Never overwrite local player (p1) position - that causes the snap-back glitch.
+            // Client predicts its own movement freely.
             PlayerSync s0 = sp.p0;
-            PlayerSync s1 = sp.p1;
             player_from_sync(&gs->players[0], &s0);
-            player_from_sync(&gs->players[1], &s1);
 
             // Apply authoritative scores
             gs->players[0].score = sp.p0_score;
@@ -209,9 +209,18 @@ void game_fixed_update(GameState *gs) {
                 gs->phase = PHASE_MATCH_OVER;
                 gs->winner_id = (gs->players[0].score >= WIN_SCORE) ? 0 : 1;
             } else if (host_phase == PHASE_PLAYING && gs->phase == PHASE_ROUND_OVER) {
-                // Host already moved on to next round, follow it
                 game_start_round(gs);
                 gs->phase = PHASE_PLAYING;
+            }
+
+            // Only sync local player (p1) state/death from host - not position/velocity
+            uint8_t host_p1_state = sp.p1.state;
+            if (host_p1_state == (uint8_t)STATE_DEAD && gs->players[1].state != STATE_DEAD) {
+                player_kill(&gs->players[1]);
+            } else if (host_p1_state != (uint8_t)STATE_DEAD && gs->players[1].state == STATE_DEAD) {
+                // Host says we respawned - accept full state including position
+                PlayerSync s1 = sp.p1;
+                player_from_sync(&gs->players[1], &s1);
             }
         }
     }
