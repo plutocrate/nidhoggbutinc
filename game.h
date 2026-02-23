@@ -1,0 +1,76 @@
+#ifndef GAME_H
+#define GAME_H
+
+#include "types.h"
+#include "player.h"
+#include "combat.h"
+#include "network.h"
+#include "input.h"
+
+#define MAX_THROWN_SWORDS 4
+#define WIN_SCORE         5
+
+typedef enum GameMode {
+    MODE_LOCAL,
+    MODE_HOST,
+    MODE_CLIENT,
+} GameMode;
+
+typedef enum GamePhase {
+    PHASE_MENU,
+    PHASE_CONNECTING,
+    PHASE_PLAYING,
+    PHASE_ROUND_OVER,
+    PHASE_MATCH_OVER,
+} GamePhase;
+
+typedef struct Camera2D_State {
+    float x;   // camera center x in world space
+    float y;
+    float target_x;
+} Camera2D_State;
+
+typedef struct GameState {
+    Player         players[2];
+    ThrowingSword  swords[MAX_THROWN_SWORDS];
+    int            num_active_swords;
+
+    GameMode       mode;
+    GamePhase      phase;
+    int            local_player_id;  // 0 or 1 (in net mode)
+
+    uint32_t       frame;
+    float          dt_accum;
+
+    Camera2D_State cam;
+
+    // Debug flags
+    bool           debug_hitboxes;
+    bool           debug_network;
+
+    // Round/match
+    int            round_over_timer;
+    int            winner_id;
+
+    // Network
+    NetState       net;
+
+    // Menu
+    char           ip_input[64];
+    int            ip_cursor;
+} GameState;
+
+void game_init(GameState *gs, GameMode mode, const char *peer_ip);
+void game_shutdown(GameState *gs);
+
+// Main tick: accumulates dt and calls game_fixed_update as needed
+void game_tick(GameState *gs, float dt);
+
+void game_fixed_update(GameState *gs);
+void game_render(const GameState *gs);
+
+// Helpers
+void game_start_round(GameState *gs);
+int  game_get_winner(const GameState *gs);
+
+#endif
