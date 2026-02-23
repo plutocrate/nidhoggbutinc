@@ -92,24 +92,45 @@ CombatResult combat_resolve(Player *p0, Player *p1, ThrowingSword *swords, int n
     for (int i = 0; i < num_swords; i++) {
         ThrowingSword *s = &swords[i];
         if (!s->active) continue;
+        if (s->hit_cooldown > 0) { s->hit_cooldown--; continue; }
 
+        // Hitbox: 16x16 centered on sword tip position (matches melee weapon hitbox)
         Rect sword_rect;
-        sword_rect.x = s->pos.x - 4;
-        sword_rect.y = s->pos.y - 4;
-        sword_rect.w = 8;
-        sword_rect.h = 8;
+        sword_rect.x = s->pos.x - 8;
+        sword_rect.y = s->pos.y - 8;
+        sword_rect.w = 16;
+        sword_rect.h = 16;
 
         Player *targets[2] = {p0, p1};
         for (int t = 0; t < 2; t++) {
             Player *target = targets[t];
-            if (target->id == s->owner) continue;
+            if (target->id == s->owner) continue;  // can't hit current owner
             if (target->state == STATE_DEAD) continue;
 
             Rect parry = player_parry_rect(target);
             if (parry.w > 0.0f && rect_overlap(sword_rect, parry)) {
-                // Parried thrown sword - sword stops, target picks it up
-                s->active = false;
+                // --- PARRY REBOUND ---
+                // Reverse horizontal velocity and boost it slightly for satisfying feel
+                s->vel.x = -s->vel.x * 1.1f;
+                // Give a slight upward kick so it doesn't immediately hit the ground
+                if (s->vel.y > 0.0f) s->vel.y = -s->vel.y * 0.5f;
+                s->vel.y -= 80.0f;
+                // Spin reverses direction
+                s->angle_vel = -s->angle_vel * 1.2f;
+                // Change ownership: now lethal to the original thrower
+                s->owner      = target->id;
+                s->rebounding = true;
+                // Brief cooldown so it can't immediately re-hit the parrying player
+                s->hit_cooldown = 6;
+                // Parrying player gets their sword back (they deflected it with their blade)
                 target->has_sword = true;
+                // Visual: small stun on the parrying player's opponent (the thrower)
+                Player *thrower = (target == p0) ? p1 : p0;
+                if (thrower->state != STATE_DEAD) {
+                    thrower->state      = STATE_STUNNED;
+                    thrower->stun_timer = 10;
+                    thrower->state_timer = 0;
+                }
                 break;
             }
             if (rect_overlap(sword_rect, target->hurtbox)) {
@@ -120,29 +141,22 @@ CombatResult combat_resolve(Player *p0, Player *p1, ThrowingSword *swords, int n
                 break;
             }
         }
-
-        // Also check if sword hits the sword-less player's body to give them the sword
-        for (int t = 0; t < 2; t++) {
-            Player *target = targets[t];
-            if (!s->active) break;
-            if (target->id != s->owner) continue;
-            // Actually, let either player pick up a sword on ground
-            // Ground pickup handled separately
-        }
     }
 
     return result;
 }
 
 void combat_throw_sword(Player *p, ThrowingSword *sword) {
-    sword->pos.x = p->sword_tip.x;
-    sword->pos.y = p->sword_tip.y;
-    sword->vel.x = (float)p->facing * SWORD_THROW_SPEED;
-    sword->vel.y = p->body.vel.y * 0.5f - 50.0f;
-    sword->angle = 0.0f;
-    sword->angle_vel = (float)p->facing * 15.0f;
-    sword->active = true;
-    sword->owner = p->id;
+    sword->pos.x      = p->sword_tip.x;
+    sword->pos.y      = p->sword_tip.y;
+    sword->vel.x      = (float)p->facing * SWORD_THROW_SPEED;
+    sword->vel.y      = p->body.vel.y * 0.5f - 50.0f;
+    sword->angle      = 0.0f;
+    sword->angle_vel  = (float)p->facing * 15.0f;
+    sword->active     = true;
+    sword->owner      = p->id;
+    sword->rebounding  = false;
+    sword->hit_cooldown = 0;
 }
 
 void combat_update_thrown_swords(ThrowingSword *swords, int num_swords,
@@ -158,29 +172,38 @@ void combat_update_thrown_swords(ThrowingSword *swords, int num_swords,
         s->pos.y += s->vel.y * dt;
         s->angle += s->angle_vel * dt;
 
-        // Ground: sword sticks
+        // Ground: sword sticks (stops spinning, slides to a halt)
         if (s->pos.y >= g_ground_y()) {
-            s->pos.y = g_ground_y();
-            s->vel.x = 0;
-            s->vel.y = 0;
-            s->angle_vel = 0;
+            s->pos.y    = g_ground_y();
+            s->vel.y    = 0.0f;
+            s->vel.x   *= 0.7f;
+            s->angle_vel = s->vel.x * 0.05f;  // slow roll matching slide
+            // Once nearly stopped, owner no longer matters — anyone can pick it up
+            if (s->vel.x > -5.0f && s->vel.x < 5.0f) {
+                s->vel.x    = 0.0f;
+                s->angle_vel = 0.0f;
+                s->rebounding = false;  // grounded and still — safe to pick up
+            }
         }
 
-        // Pickup: player without sword walks over it
-        Rect sword_rect;
-        sword_rect.x = s->pos.x - 10;
-        sword_rect.y = s->pos.y - 10;
-        sword_rect.w = 20;
-        sword_rect.h = 20;
+        // Pickup: any player without a sword can grab it when on the ground and still
+        // (while airborne/rebounding only the non-owner can be hit by it, handled in combat_resolve)
+        if (!s->rebounding) {
+            Rect pickup_rect;
+            pickup_rect.x = s->pos.x - 12;
+            pickup_rect.y = s->pos.y - 12;
+            pickup_rect.w = 24;
+            pickup_rect.h = 24;
 
-        for (int j = 0; j < 2; j++) {
-            Player *pl = players[j];
-            if (pl->has_sword) continue;
-            if (pl->state == STATE_DEAD) continue;
-            if (rect_overlap(sword_rect, pl->hurtbox)) {
-                pl->has_sword = true;
-                s->active = false;
-                break;
+            for (int j = 0; j < 2; j++) {
+                Player *pl = players[j];
+                if (pl->has_sword) continue;
+                if (pl->state == STATE_DEAD) continue;
+                if (rect_overlap(pickup_rect, pl->hurtbox)) {
+                    pl->has_sword = true;
+                    s->active     = false;
+                    break;
+                }
             }
         }
 

@@ -341,16 +341,21 @@ void game_fixed_update(GameState *gs) {
 
     gs->frame++;
 }
+
+static void sun_update(float dt);  // defined in rendering section below
+
 void game_tick(GameState *gs, float dt) {
-    // Poll inputs ONCE per real render frame so IsKeyPressed() edge events
-    // are latched into the buffers before any fixed update runs.
+    // Poll inputs ONCE per real render frame
     input_buffer_poll_p1(&gs->input_buf_p1);
     input_buffer_poll_p2(&gs->input_buf_p2);
 
-    // Debug toggles: also sampled once per render frame, never inside fixed update
+    // Debug toggles: sampled once per render frame
     if (IsKeyPressed(KEY_F1))  gs->debug_hitboxes = !gs->debug_hitboxes;
     if (IsKeyPressed(KEY_F2))  gs->debug_network  = !gs->debug_network;
     if (IsKeyPressed(KEY_F11)) ToggleFullscreen();
+
+    // Advance sun animation
+    sun_update(dt);
 
     gs->dt_accum += dt;
     if (gs->dt_accum > FIXED_DT * 8) gs->dt_accum = FIXED_DT * 8;
@@ -387,21 +392,140 @@ static int world_to_screen_y(float world_y) {
     return (int)((world_y - WORLD_GROUND) * scale + screen_ground);
 }
 
+// ----------------------------------------------------------------
+// Sun / light source — Perlin-noise drifting warm light
+// ----------------------------------------------------------------
+
+// Minimal smooth noise: hash + cosine interpolation, no external deps
+static float snoise_hash(int x) {
+    x = (x << 13) ^ x;
+    return 1.0f - (float)((x * (x * x * 15731 + 789221) + 1376312589) & 0x7fffffff)
+                  / 1073741824.0f;
+}
+static float snoise_smooth(float x) {
+    int   xi = (int)x;
+    float xf = x - (float)xi;
+    float t  = xf * xf * (3.0f - 2.0f * xf);  // smoothstep
+    return snoise_hash(xi) * (1.0f - t) + snoise_hash(xi + 1) * t;
+}
+// Fractional Brownian Motion — layers of noise at different frequencies
+static float fbm(float x, int octaves) {
+    float val = 0.0f, amp = 0.5f, freq = 1.0f;
+    for (int o = 0; o < octaves; o++) {
+        val  += snoise_smooth(x * freq + (float)o * 31.7f) * amp;
+        amp  *= 0.5f;
+        freq *= 2.0f;
+    }
+    return val;  // roughly in [-1, 1]
+}
+
+// Sun state: animated via time accumulator
+static float g_sun_time = 0.0f;
+
+// Call once per render frame with real dt
+static void sun_update(float dt) {
+    g_sun_time += dt * 0.07f;  // very slow drift
+}
+
+// Returns current sun screen position
+static void sun_get_pos(int *sx, int *sy) {
+    int sw = g_screen_w();
+    // X drifts across the upper half of screen with slow fbm
+    float nx = fbm(g_sun_time,        3);  // -1..1
+    float ny = fbm(g_sun_time + 5.3f, 3);  // offset so X/Y decorrelate
+    *sx = (int)(sw * 0.5f + nx * sw * 0.28f);
+    *sy = (int)(60.0f    + ny * 40.0f + 20.0f);  // stays in top band 20-120px
+}
+
+// Draw radial glow with multiple transparent circles (cheap soft light)
+static void render_sun(void) {
+    int sx, sy;
+    sun_get_pos(&sx, &sy);
+
+    // Outer atmospheric haze — large, very faint
+    for (int r = 420; r >= 20; r -= 20) {
+        float t   = 1.0f - (float)r / 420.0f;   // 0 at edge, 1 at center
+        float t2  = t * t;
+        uint8_t a = (uint8_t)(t2 * 38.0f);
+        // Warm amber/gold tint
+        DrawCircle(sx, sy, (float)r,
+                   (Color){255, 210 + (uint8_t)(t * 30), 80, a});
+    }
+
+    // Mid corona
+    for (int r = 80; r >= 4; r -= 4) {
+        float t  = 1.0f - (float)r / 80.0f;
+        uint8_t a = (uint8_t)(t * t * 160.0f);
+        DrawCircle(sx, sy, (float)r,
+                   (Color){255, 240, 160, a});
+    }
+
+    // Bright core disc
+    DrawCircle(sx, sy, 18, (Color){255, 255, 220, 230});
+    DrawCircle(sx, sy, 10, (Color){255, 255, 255, 255});
+
+    // Light ray shafts — thin lines fanning downward from sun
+    int num_rays = 12;
+    for (int ri = 0; ri < num_rays; ri++) {
+        float base_angle = 3.14159f * 0.5f;  // downward = PI/2
+        float spread     = 3.14159f * 0.55f; // 99 degree fan
+        float angle = base_angle - spread * 0.5f
+                      + spread * (float)ri / (float)(num_rays - 1);
+        // Animate ray length with noise
+        float ray_noise = fbm(g_sun_time * 3.0f + ri * 0.7f, 2) * 0.5f + 0.5f;
+        float ray_len   = 90.0f + ray_noise * 140.0f;
+        int ex = sx + (int)(cosf(angle) * ray_len);
+        int ey = sy + (int)(sinf(angle) * ray_len);
+        uint8_t ra = (uint8_t)(30.0f + ray_noise * 30.0f);
+        DrawLine(sx, sy, ex, ey, (Color){255, 240, 160, ra});
+    }
+
+    // Ground light pool directly below sun (sun_x projected to ground)
+    int gscreen_y = (int)((float)g_screen_h() * 0.82f);
+    int pool_w    = 180 + (int)(fbm(g_sun_time * 1.3f, 2) * 0.5f + 0.5f) * 60;
+    for (int pw = pool_w; pw > 10; pw -= 12) {
+        float t  = 1.0f - (float)pw / (float)pool_w;
+        uint8_t a = (uint8_t)(t * t * 45.0f);
+        DrawEllipse(sx, gscreen_y, (float)pw, 8.0f,
+                    (Color){255, 230, 150, a});
+    }
+}
+
 static void render_arena(float cam_x) {
     int sw = g_screen_w();
     int sh = g_screen_h();
     float gy = g_ground_y();
-    // Fixed world arena: always 4000 units wide centered at 0
     float aw = 4000.0f;
 
     ClearBackground((Color){20, 15, 30, 255});
+
+    // Sky gradient tinted toward sun position
+    int sun_sx, sun_sy;
+    sun_get_pos(&sun_sx, &sun_sy);
+    // Warm upper sky band near sun
+    for (int y = 0; y < sh / 2; y++) {
+        float t   = 1.0f - (float)y / (float)(sh / 2);  // 1 at top, 0 at mid
+        float dx  = (float)(sun_sx - sw / 2) / (float)sw; // -0.5..0.5
+        float warm = t * (0.6f + dx * 0.2f);
+        warm = warm < 0.0f ? 0.0f : (warm > 1.0f ? 1.0f : warm);
+        uint8_t r = (uint8_t)(20 + warm * 40);
+        uint8_t g2 = (uint8_t)(15 + warm * 20);
+        uint8_t b = (uint8_t)(30  - warm * 12);
+        DrawLine(0, y, sw, y, (Color){r, g2, b, 255});
+    }
+
+    // Sun drawn into the sky before other elements
+    render_sun();
 
     // Background parallax columns (screen-space, purely visual)
     float para = cam_x * 0.3f;
     for (int i = 0; i < 10; i++) {
         float bx = fmodf(i * 160.0f - para * 0.5f, (float)sw + 160.0f) - 80.0f;
+        // Columns slightly lit on sun-facing side
+        float col_bright = 1.0f + (bx < (float)sun_sx ? 0.15f : 0.0f);
+        uint8_t cb = (uint8_t)((40 + i * 5) * col_bright);
         DrawRectangle((int)bx, 80 + i * 20, 2, 60 + i * 8,
-                      (Color){40 + i * 5, 30 + i * 5, 60 + i * 5, 120});
+                      (Color){cb, (uint8_t)(30 + i * 5), (uint8_t)(60 + i * 5), 120});
     }
 
     // Ground slab - use screen ground position for the fill rectangle

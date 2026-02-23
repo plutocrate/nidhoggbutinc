@@ -13,7 +13,9 @@ typedef struct ThrowingSword {
     float angle;
     float angle_vel;
     bool  active;
-    int   owner;    // which player threw it
+    int   owner;        // which player threw it (changes on parry rebound)
+    bool  rebounding;   // true after being parried — now lethal to original thrower
+    int   hit_cooldown; // frames of immunity after parry to prevent instant double-hit
 } ThrowingSword;
 
 typedef struct RagdollBone {
