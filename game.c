@@ -10,8 +10,9 @@
 // ----------------------------------------------------------------
 int   g_screen_w(void) { return GetScreenWidth();  }
 int   g_screen_h(void) { return GetScreenHeight(); }
-float g_ground_y(void) { return (float)GetScreenHeight() * 0.82f; }
-float g_arena_w(void)  { return (float)GetScreenWidth()  * 3.0f;  }
+// Fixed world dimensions - physics runs in this space on ALL machines
+float g_ground_y(void) { return 620.0f; }   // fixed world Y of ground
+float g_arena_w(void)  { return 4000.0f; }  // fixed world width (kept for compat)
 
 // ----------------------------------------------------------------
 // Forward declarations for render helpers
@@ -281,15 +282,32 @@ void game_tick(GameState *gs, float dt) {
 
 static int g_local_player_id = 0;  // set each frame; used for coloring
 
+// ----------------------------------------------------------------
+// Resolution-independent rendering
+//
+// World space is FIXED (independent of screen size):
+//   X: center=0, players spawn at ±200
+//   Y: ground=620, sky above
+// Screen mapping scales world coords to fit any resolution.
+// ----------------------------------------------------------------
+#define VIRTUAL_W  1280.0f   // world units across screen width at zoom=1
+#define WORLD_GROUND 620.0f  // must match g_ground_y()
+
+static float world_scale(void) {
+    return (float)g_screen_w() / VIRTUAL_W;
+}
+
 static int world_to_screen_x(float world_x, float cam_x) {
+    float scale = world_scale() * g_cam_zoom;
     float half_sw = (float)g_screen_w() * 0.5f;
-    return (int)((world_x - cam_x) * g_cam_zoom + half_sw);
+    return (int)((world_x - cam_x) * scale + half_sw);
 }
 
 static int world_to_screen_y(float world_y) {
-    // Zoom vertically around the ground line so it stays anchored
-    float ground = g_ground_y();
-    return (int)((world_y - ground) * g_cam_zoom + ground);
+    float scale = world_scale() * g_cam_zoom;
+    // Map world ground (620) -> screen ground (82% of screen height)
+    float screen_ground = (float)g_screen_h() * 0.82f;
+    return (int)((world_y - WORLD_GROUND) * scale + screen_ground);
 }
 
 static void render_arena(float cam_x) {
@@ -309,10 +327,10 @@ static void render_arena(float cam_x) {
                       (Color){40 + i * 5, 30 + i * 5, 60 + i * 5, 120});
     }
 
-    // Ground slab
+    // Ground slab - use screen ground position for the fill rectangle
     int gx0 = world_to_screen_x(-aw * 0.5f, cam_x);
     int gx1 = world_to_screen_x( aw * 0.5f, cam_x);
-    int gyi = world_to_screen_y(gy);
+    int gyi = world_to_screen_y(WORLD_GROUND);   // maps to 82% screen height
     DrawRectangle(gx0, gyi, gx1 - gx0, sh - gyi, (Color){45, 38, 55, 255});
     DrawLine(gx0, gyi, gx1, gyi, (Color){180, 140, 200, 255});
 
@@ -329,11 +347,11 @@ static void render_arena(float cam_x) {
     DrawLine(left_goal,  0, left_goal,  sh, (Color){255, 80, 80, 180});
     DrawLine(right_goal, 0, right_goal, sh, (Color){80, 80, 255, 180});
 
-    // Mid platforms at fixed world positions (platforms at -300 and +100, y = 180 world units above ground)
-    float plat_world_y = gy - 180.0f;   // fixed height above ground in world units
-    float plat_world_w = 300.0f;        // fixed width in world units
+    // Mid platforms at fixed world positions
+    float plat_world_y = WORLD_GROUND - 180.0f;   // 180 world units above ground
+    float plat_world_w = 300.0f;
     int plat_yi = world_to_screen_y(plat_world_y);
-    int plat_wi = (int)(plat_world_w * g_cam_zoom);
+    int plat_wi = (int)(plat_world_w * world_scale() * g_cam_zoom);
 
     int px0 = world_to_screen_x(-400.0f, cam_x);
     DrawRectangle(px0, plat_yi, plat_wi, 14, (Color){65, 55, 80, 255});
@@ -344,17 +362,18 @@ static void render_arena(float cam_x) {
     DrawLine(px1, plat_yi, px1 + plat_wi, plat_yi, (Color){180, 140, 200, 200});
 
     (void)sw;
+    (void)gy;
 }
 
 static void render_player(const Player *p, float cam_x, bool debug) {
     if (!p->ragdoll.active) {
-        // Scale dimensions by zoom so the character appears larger/smaller correctly
-        int h  = (int)(p->body.size.y * g_cam_zoom);
-        int w  = (int)(p->body.size.x * g_cam_zoom);
-        // Anchor to foot position (bottom of body) so player always stands on ground
-        int foot_y     = world_to_screen_y(p->body.pos.y + p->body.size.y);
-        int sy         = foot_y - h;
-        int sx = world_to_screen_x(p->body.pos.x + p->body.size.x * 0.5f, cam_x);
+        // All positions derived from world coords through transforms - no manual zoom scaling
+        int foot_y = world_to_screen_y(p->body.pos.y + p->body.size.y);
+        int top_y  = world_to_screen_y(p->body.pos.y);
+        int h      = foot_y - top_y;   // screen-space height (auto-scaled)
+        int w      = (int)(p->body.size.x * world_scale() * g_cam_zoom);
+        int sy     = top_y;
+        int sx     = world_to_screen_x(p->body.pos.x + p->body.size.x * 0.5f, cam_x);
 
         // Local player is always blue, opponent always red
         bool is_local = (p->id == g_local_player_id);
@@ -407,23 +426,24 @@ static void render_player(const Player *p, float cam_x, bool debug) {
     }
 
     if (debug) {
+        float s = world_scale() * g_cam_zoom;
         int hx = world_to_screen_x(p->hurtbox.x, cam_x);
         int hy = world_to_screen_y(p->hurtbox.y);
-        int hw = (int)(p->hurtbox.w * g_cam_zoom);
-        int hh = (int)(p->hurtbox.h * g_cam_zoom);
+        int hw = (int)(p->hurtbox.w * s);
+        int hh = (int)(p->hurtbox.h * s);
         DrawRectangleLines(hx, hy, hw, hh, GREEN);
         if (p->weapon_hitbox.w > 0) {
             int wx = world_to_screen_x(p->weapon_hitbox.x, cam_x);
             int wy = world_to_screen_y(p->weapon_hitbox.y);
-            int ww = (int)(p->weapon_hitbox.w * g_cam_zoom);
-            int wh = (int)(p->weapon_hitbox.h * g_cam_zoom);
+            int ww = (int)(p->weapon_hitbox.w * s);
+            int wh = (int)(p->weapon_hitbox.h * s);
             DrawRectangleLines(wx, wy, ww, wh, RED);
         }
         if (p->parry_box.w > 0) {
             int px2 = world_to_screen_x(p->parry_box.x, cam_x);
             int py2 = world_to_screen_y(p->parry_box.y);
-            int pw  = (int)(p->parry_box.w * g_cam_zoom);
-            int ph  = (int)(p->parry_box.h * g_cam_zoom);
+            int pw  = (int)(p->parry_box.w * s);
+            int ph  = (int)(p->parry_box.h * s);
             DrawRectangleLines(px2, py2, pw, ph, YELLOW);
         }
     }
