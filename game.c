@@ -29,6 +29,10 @@ static void render_controls_hint(void);
 // Forward declaration - defined later in rendering section
 static float g_cam_zoom = 1.0f;
 
+// Fixed world dimensions - used by both simulation and rendering
+#define VIRTUAL_W    1280.0f   // world units across screen width at zoom=1
+#define WORLD_GROUND 620.0f    // must match g_ground_y()
+
 // ----------------------------------------------------------------
 // Init / Shutdown
 // ----------------------------------------------------------------
@@ -61,10 +65,10 @@ void game_shutdown(GameState *gs) {
 }
 
 void game_start_round(GameState *gs) {
-    // Use fixed world coordinates - independent of screen size
-    // Players spawn 200 units left and right of world center (0,0)
-    player_init(&gs->players[0], 0, -200.0f);
-    player_init(&gs->players[1], 1,  200.0f - PLAYER_W);
+    // Symmetric spawn: player bodies centered at ±200 from world origin
+    float spawn_offset = 200.0f;
+    player_init(&gs->players[0], 0, -spawn_offset - PLAYER_W * 0.5f);
+    player_init(&gs->players[1], 1,  spawn_offset - PLAYER_W * 0.5f);
     gs->players[1].facing = -1;
 
     for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
@@ -88,23 +92,21 @@ static void update_camera(Camera2D_State *cam, const Player *p0, const Player *p
     cam->target_x = mid_x;
     cam->x += (cam->target_x - cam->x) * 0.08f;
 
-    float half  = (float)g_screen_w() * 0.5f;
-    float half_arena = 2000.0f;  // fixed: arena is 4000 world units wide
-    if (cam->x - half / g_cam_zoom < -half_arena) cam->x = -half_arena + half / g_cam_zoom;
-    if (cam->x + half / g_cam_zoom >  half_arena) cam->x =  half_arena - half / g_cam_zoom;
+    // Clamp in world units: half-screen in world units = (screen_w/2) / world_scale
+    float half_screen_world = (VIRTUAL_W * 0.5f) / g_cam_zoom;
+    float half_arena = 2000.0f;
+    if (cam->x - half_screen_world < -half_arena) cam->x = -half_arena + half_screen_world;
+    if (cam->x + half_screen_world >  half_arena) cam->x =  half_arena - half_screen_world;
 
-    // Dynamic zoom: based on horizontal distance between players
+    // Dynamic zoom based on player distance in WORLD units (screen-independent)
     float dist = fabsf(p1->body.pos.x - p0->body.pos.x);
-    float sw = (float)g_screen_w();
-    // When dist <= 200: zoom in to 1.4; when dist >= sw*0.7: zoom out to 0.6
-    float min_dist = 200.0f;
-    float max_dist = sw * 0.7f;
+    float min_dist = 150.0f;   // world units - zoom in when this close
+    float max_dist = 700.0f;   // world units - zoom out when this far
     float t = (dist - min_dist) / (max_dist - min_dist);
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     cam->target_zoom = 1.4f - t * 0.8f;  // 1.4 (close) -> 0.6 (far)
 
-    // Smooth zoom interpolation
     cam->zoom += (cam->target_zoom - cam->zoom) * 0.05f;
 }
 
@@ -284,14 +286,7 @@ static int g_local_player_id = 0;  // set each frame; used for coloring
 
 // ----------------------------------------------------------------
 // Resolution-independent rendering
-//
-// World space is FIXED (independent of screen size):
-//   X: center=0, players spawn at ±200
-//   Y: ground=620, sky above
-// Screen mapping scales world coords to fit any resolution.
 // ----------------------------------------------------------------
-#define VIRTUAL_W  1280.0f   // world units across screen width at zoom=1
-#define WORLD_GROUND 620.0f  // must match g_ground_y()
 
 static float world_scale(void) {
     return (float)g_screen_w() / VIRTUAL_W;
