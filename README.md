@@ -26,6 +26,8 @@ sudo pacman -S raylib
 ```
 
 **Windows (MSYS2/MinGW64):**
+- install msys2 from https://www.msys2.org
+- then do this
 ```bash
 pacman -S mingw-w64-x86_64-raylib
 ```
