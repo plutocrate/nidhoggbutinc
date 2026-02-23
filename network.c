@@ -98,6 +98,58 @@ bool net_init(NetState *net, NetRole role, const char *peer_ip) {
     return true;
 }
 
+// ---- Relay hole-punch init ----
+// Both players call this with the same relay_ip and room_code.
+// The relay assigns roles: first to join = host (player 0), second = client (player 1).
+bool net_init_relay(NetState *net, const char *relay_ip, const char *room_code) {
+    memset(net, 0, sizeof(*net));
+    net->input_delay = INPUT_BUFFER_FRAMES;
+    net->using_relay = true;
+    net->role = NET_NONE;  // assigned by relay (first=host, second=client)
+
+    strncpy(net->relay_ip, relay_ip, sizeof(net->relay_ip) - 1);
+    strncpy(net->room_code, room_code, 4);
+    net->room_code[4] = '\0';
+
+    // Set relay server address
+    memset(&net->relay_addr, 0, sizeof(net->relay_addr));
+    net->relay_addr.sin_family = AF_INET;
+    net->relay_addr.sin_port   = htons(NET_RELAY_PORT);
+    inet_pton(AF_INET, relay_ip, &net->relay_addr.sin_addr);
+
+    // Open socket - bind to game port so hole-punch traffic uses same port as game
+    net->sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (net->sock == NET_INVALID_SOCKET) {
+        fprintf(stderr, "[NET] socket() failed\n");
+        return false;
+    }
+
+    if (!set_nonblocking(net->sock)) {
+        net_close(net->sock);
+        return false;
+    }
+
+    // Allow port reuse so bind doesn't fail on restart
+    int reuse = 1;
+    setsockopt(net->sock, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+
+    struct sockaddr_in bind_addr;
+    memset(&bind_addr, 0, sizeof(bind_addr));
+    bind_addr.sin_family      = AF_INET;
+    bind_addr.sin_port        = htons(NET_PORT);
+    bind_addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(net->sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
+        fprintf(stderr, "[NET] bind() failed on port %d\n", NET_PORT);
+        net_close(net->sock);
+        return false;
+    }
+
+    printf("[NET] Relay mode — joining room '%s' via %s:%d\n",
+           room_code, relay_ip, NET_RELAY_PORT);
+    return true;
+}
+
 void net_shutdown(NetState *net) {
     if (net->sock != NET_INVALID_SOCKET) {
         net_close(net->sock);
@@ -127,21 +179,32 @@ static void net_handle_packet(NetState *net, const uint8_t *buf, int len,
 
     switch (type) {
         case PKT_HANDSHAKE: {
-            // Host receives this from client
-            if (net->role == NET_HOST) {
+            // Direct mode: host receives this from client
+            // Relay mode: first to receive a HANDSHAKE becomes HOST
+            if (net->role == NET_HOST || (net->using_relay && net->role == NET_NONE)) {
+                // Promote to host if needed
+                if (net->using_relay && net->role != NET_HOST) {
+                    net->role = NET_HOST;
+                    printf("[NET] Relay: promoted to HOST (received handshake first)\n");
+                }
                 net->peer_addr = *from;
                 net->peer_connected = true;
                 // Send ACK
                 NetHeader ack;
-                ack.type = PKT_HANDSHAKE_ACK;
+                ack.type  = PKT_HANDSHAKE_ACK;
                 ack.frame = 0;
                 net_send_raw(net, &ack, sizeof(ack));
                 printf("[NET] Client connected from %s\n", inet_ntoa(from->sin_addr));
+            } else if (net->using_relay && net->role == NET_CLIENT) {
+                // We're client in relay mode — peer is sending handshake back to us
+                // (hole-punch worked both ways). Update peer addr to confirmed addr.
+                net->peer_addr = *from;
             }
             break;
         }
         case PKT_HANDSHAKE_ACK: {
             if (net->role == NET_CLIENT) {
+                net->peer_addr = *from;  // confirm peer addr
                 net->peer_connected = true;
                 net->connected = true;
                 printf("[NET] Connected to host\n");
@@ -202,6 +265,46 @@ static void net_handle_packet(NetState *net, const uint8_t *buf, int len,
             }
             break;
         }
+        case PKT_RELAY_PEER: {
+            // Relay server sent us the peer's public ip:port
+            // Format: [1 byte type=21][4 bytes IPv4][2 bytes port BE]
+            if (len < 7) break;
+            if (!net->using_relay || net->relay_peer_found) break;
+
+            uint8_t  raw_ip[4];
+            uint16_t raw_port;
+            memcpy(raw_ip, buf + 1, 4);
+            memcpy(&raw_port, buf + 5, 2);
+            raw_port = (uint16_t)(((uint16_t)buf[5] << 8) | (uint16_t)buf[6]);
+
+            memset(&net->peer_addr, 0, sizeof(net->peer_addr));
+            net->peer_addr.sin_family = AF_INET;
+            net->peer_addr.sin_port   = htons(raw_port);
+            memcpy(&net->peer_addr.sin_addr, raw_ip, 4);
+
+            net->relay_peer_found = true;
+
+            // Determine role by who sent first: relay makes first joiner host.
+            // We detect this by comparing our bound port source address — but
+            // simpler: we just become HOST if we haven't been set yet.
+            // The relay sends to first-joiner second, so we use a flag:
+            // Both sides start as NET_NONE; first PKT_RELAY_PEER receiver becomes host,
+            // second becomes client. The relay sends to host first then client.
+            // Since we can't know ordering here, we negotiate via the handshake:
+            // whoever sends PKT_HANDSHAKE first is treated as client by the other.
+            // So: both sides send PKT_HANDSHAKE simultaneously (hole-punch).
+            // First one whose HANDSHAKE is received becomes the "client" from the
+            // other's perspective (host role). We handle this symmetrically:
+            // - Set role to CLIENT initially (will be promoted to HOST if we receive
+            //   a HANDSHAKE before our own is acked).
+            // Actually: keep it simple — both send HANDSHAKE, first to receive it
+            // acts as HOST. We track with a flag.
+            net->role = NET_CLIENT;  // tentative; may be promoted in HANDSHAKE handler
+
+            printf("[NET] Relay gave peer addr %d.%d.%d.%d:%d — starting hole-punch\n",
+                   raw_ip[0], raw_ip[1], raw_ip[2], raw_ip[3], raw_port);
+            break;
+        }
     }
 }
 
@@ -241,11 +344,41 @@ static void net_recv_loop(NetState *net) {
 
 void net_update(NetState *net, uint32_t frame_ms) {
     (void)frame_ms;
+    uint32_t now = get_time_ms();
 
-    // Client: send handshake until connected
-    if (net->role == NET_CLIENT && !net->peer_connected) {
+    // ---- RELAY MODE: keep sending join until relay gives us the peer addr ----
+    if (net->using_relay && !net->relay_peer_found) {
+        if (now - net->relay_last_join_ms > 500) {
+            uint8_t pkt[5];
+            pkt[0] = PKT_RELAY_JOIN;
+            memcpy(pkt + 1, net->room_code, 4);
+            sendto(net->sock, (const char *)pkt, 5, 0,
+                   (struct sockaddr *)&net->relay_addr, sizeof(net->relay_addr));
+            net->relay_last_join_ms = now;
+            printf("[NET] Sent relay JOIN for room '%s'\n", net->room_code);
+        }
+        net_recv_loop(net);
+        return;
+    }
+
+    // ---- RELAY MODE: hole-punch phase — send handshakes until connected ----
+    if (net->using_relay && net->relay_peer_found && !net->peer_connected) {
+        if (now - net->relay_last_join_ms > 150) {
+            // Send handshake to peer's public addr to punch hole in both NATs
+            NetHeader hs;
+            hs.type  = PKT_HANDSHAKE;
+            hs.frame = 0;
+            sendto(net->sock, (const char *)&hs, sizeof(hs), 0,
+                   (struct sockaddr *)&net->peer_addr, sizeof(net->peer_addr));
+            net->relay_last_join_ms = now;
+        }
+        net_recv_loop(net);
+        return;
+    }
+
+    // ---- DIRECT MODE: client sends handshake until connected ----
+    if (!net->using_relay && net->role == NET_CLIENT && !net->peer_connected) {
         static uint32_t last_hs = 0;
-        uint32_t now = get_time_ms();
         if (now - last_hs > 500) {
             NetHeader hs;
             hs.type = PKT_HANDSHAKE;
@@ -272,7 +405,6 @@ void net_update(NetState *net, uint32_t frame_ms) {
     }
 
     // Ping every second
-    uint32_t now = get_time_ms();
     if (net->connected && now - net->last_ping_time > 1000) {
         net_send_ping(net);
     }

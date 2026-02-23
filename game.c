@@ -40,11 +40,28 @@ void game_init(GameState *gs, GameMode mode, const char *peer_ip) {
     memset(gs, 0, sizeof(*gs));
     gs->mode = mode;
     gs->phase = (mode == MODE_LOCAL) ? PHASE_PLAYING : PHASE_MENU;
+    // In relay mode, role is negotiated at runtime; start as player 0, corrected later
     gs->local_player_id = (mode == MODE_CLIENT) ? 1 : 0;
     gs->frame = 0;
     gs->debug_hitboxes = false;
 
-    if (mode != MODE_LOCAL) {
+    if (mode == MODE_LOCAL) {
+        // nothing
+    } else if (mode == MODE_RELAY) {
+        // peer_ip encodes "relay_ip|room_code"
+        char buf[128];
+        strncpy(buf, peer_ip ? peer_ip : "", sizeof(buf) - 1);
+        char *sep = strchr(buf, '|');
+        const char *relay_ip   = buf;
+        const char *room_code  = "AAAA";
+        if (sep) { *sep = '\0'; room_code = sep + 1; }
+        if (!net_init_relay(&gs->net, relay_ip, room_code)) {
+            gs->mode = MODE_LOCAL;
+            gs->phase = PHASE_PLAYING;
+        } else {
+            gs->phase = PHASE_CONNECTING;
+        }
+    } else {
         NetRole role = (mode == MODE_HOST) ? NET_HOST : NET_CLIENT;
         if (!net_init(&gs->net, role, peer_ip)) {
             gs->mode = MODE_LOCAL;
@@ -132,6 +149,12 @@ void game_fixed_update(GameState *gs) {
         if (gs->mode != MODE_LOCAL) {
             net_update(&gs->net, gs->frame);
             if (net_is_connected(&gs->net)) {
+                // Relay mode: role was negotiated at runtime — sync local_player_id now
+                if (gs->mode == MODE_RELAY) {
+                    gs->local_player_id = (gs->net.role == NET_CLIENT) ? 1 : 0;
+                    // Treat relay mode same as HOST or CLIENT going forward
+                    gs->mode = (gs->net.role == NET_HOST) ? MODE_HOST : MODE_CLIENT;
+                }
                 gs->phase = PHASE_PLAYING;
             }
         }

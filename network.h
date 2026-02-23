@@ -33,14 +33,17 @@ typedef enum NetRole {
 } NetRole;
 
 typedef enum NetPacketType {
-    PKT_HANDSHAKE  = 1,
+    PKT_HANDSHAKE     = 1,
     PKT_HANDSHAKE_ACK = 2,
-    PKT_INPUT      = 3,
-    PKT_STATE      = 4,  // host->client authoritative state
-    PKT_PING       = 5,
-    PKT_PONG       = 6,
-    PKT_READY      = 7,
-    PKT_START      = 8,
+    PKT_INPUT         = 3,
+    PKT_STATE         = 4,  // host->client authoritative state
+    PKT_PING          = 5,
+    PKT_PONG          = 6,
+    PKT_READY         = 7,
+    PKT_START         = 8,
+    // Relay hole-punch packets (sent to relay server, not to peer)
+    PKT_RELAY_JOIN    = 20, // [1 byte type] [4 bytes room code]
+    PKT_RELAY_PEER    = 21, // [1 byte type] [4 bytes IPv4] [2 bytes port BE]
 } NetPacketType;
 
 // All packets start with this header
@@ -96,10 +99,21 @@ typedef struct NetState {
     bool ready_sent;
     bool match_started;
     char peer_ip[64];
+
+    // Relay hole-punch state (used when connecting via relay server)
+    bool     using_relay;
+    char     relay_ip[64];
+    char     room_code[5];           // 4 chars + null
+    struct sockaddr_in relay_addr;
+    bool     relay_peer_found;       // relay gave us the peer's public addr
+    uint32_t relay_last_join_ms;     // last time we sent PKT_RELAY_JOIN
 } NetState;
 
 // Lifecycle
 bool net_init(NetState *net, NetRole role, const char *peer_ip);
+// Init with relay hole-punch. relay_ip = VPS public IP, room_code = 4-char shared code.
+// Both players call this with the same room_code; role is still HOST/CLIENT (first=host).
+bool net_init_relay(NetState *net, const char *relay_ip, const char *room_code);
 void net_shutdown(NetState *net);
 
 // Called every frame

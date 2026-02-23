@@ -35,6 +35,7 @@
 
 // Network
 #define NET_PORT            7777
+#define NET_RELAY_PORT      7778
 #define INPUT_BUFFER_FRAMES 5
 #define MAX_PACKET_SIZE     512
 

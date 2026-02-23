@@ -14,6 +14,7 @@ typedef enum GameMode {
     MODE_LOCAL,
     MODE_HOST,
     MODE_CLIENT,
+    MODE_RELAY,   // both players connect via relay server (hole-punch)
 } GameMode;
 
 typedef enum GamePhase {
@@ -67,6 +68,8 @@ typedef struct GameState {
     // Menu
     char           ip_input[64];
     int            ip_cursor;
+    char           relay_ip[64];
+    char           room_code[5];
 } GameState;
 
 void game_init(GameState *gs, GameMode mode, const char *peer_ip);
