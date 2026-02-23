@@ -6,6 +6,7 @@
 #include "combat.h"
 #include "network.h"
 #include "input.h"
+#include "audio.h"
 
 #define MAX_THROWN_SWORDS 4
 #define WIN_SCORE         5
@@ -60,6 +61,9 @@ typedef struct GameState {
 
     // Network
     NetState       net;
+
+    // Audio
+    AudioState     audio;
 
     // Input buffers: polled once per render frame, consumed per fixed update
     InputBuffer    input_buf_p1;

@@ -1,5 +1,6 @@
 #include "game.h"
 #include "physics.h"
+#include "audio.h"
 #include "raylib.h"
 #include <math.h>
 #include <string.h>
@@ -40,10 +41,12 @@ void game_init(GameState *gs, GameMode mode, const char *peer_ip) {
     memset(gs, 0, sizeof(*gs));
     gs->mode = mode;
     gs->phase = (mode == MODE_LOCAL) ? PHASE_PLAYING : PHASE_MENU;
-    // In relay mode, role is negotiated at runtime; start as player 0, corrected later
     gs->local_player_id = (mode == MODE_CLIENT) ? 1 : 0;
     gs->frame = 0;
     gs->debug_hitboxes = false;
+
+    InitAudioDevice();
+    audio_init(&gs->audio);
 
     if (mode == MODE_LOCAL) {
         // nothing
@@ -79,6 +82,8 @@ void game_shutdown(GameState *gs) {
         net_shutdown(&gs->net);
         net_platform_shutdown();
     }
+    audio_shutdown(&gs->audio);
+    CloseAudioDevice();
 }
 
 void game_start_round(GameState *gs) {
@@ -262,6 +267,17 @@ void game_fixed_update(GameState *gs) {
         }
     }
 
+    // Snapshot state BEFORE player_update so audio can detect transitions
+    PlayerState prev_states[2] = {
+        gs->players[0].state,
+        gs->players[1].state,
+    };
+    bool prev_on_ground[2] = {
+        gs->players[0].body.on_ground,
+        gs->players[1].body.on_ground,
+    };
+    Input cur_inputs[2] = { p0_in, p1_in };
+
     player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
     player_update(&gs->players[1], &p1_in, FIXED_DT, gs->platforms, gs->num_platforms);
 
@@ -283,10 +299,15 @@ void game_fixed_update(GameState *gs) {
 
     // Only HOST and LOCAL run authoritative combat resolution.
     // CLIENT never kills players locally - all kills come from host via NetStatePacket.
+    CombatResult combat_result = {HIT_NONE, HIT_NONE, false};
     if (gs->mode != MODE_CLIENT) {
-        combat_resolve(&gs->players[0], &gs->players[1],
-                       gs->swords, MAX_THROWN_SWORDS);
+        combat_result = combat_resolve(&gs->players[0], &gs->players[1],
+                                       gs->swords, MAX_THROWN_SWORDS);
     }
+
+    // Audio: fire sound triggers based on state transitions and combat result
+    audio_update(&gs->audio, gs->players, prev_states, prev_on_ground,
+                 combat_result, cur_inputs);
 
     // Death / respawn handling - HOST and LOCAL only
     // CLIENT receives authoritative kills/scores/phase from NetStatePacket
