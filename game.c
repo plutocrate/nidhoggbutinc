@@ -69,6 +69,8 @@ void game_start_round(GameState *gs) {
     gs->cam.x = sw * 0.5f;
     gs->cam.y = g_screen_h() * 0.5f;
     gs->cam.target_x = gs->cam.x;
+    gs->cam.zoom = 1.0f;
+    gs->cam.target_zoom = 1.0f;
     gs->round_over_timer = 0;
     gs->winner_id = -1;
 }
@@ -81,10 +83,24 @@ static void update_camera(Camera2D_State *cam, const Player *p0, const Player *p
     cam->target_x = mid_x;
     cam->x += (cam->target_x - cam->x) * 0.08f;
 
-    float half  = g_screen_w() * 0.5f;
+    float half  = (float)g_screen_w() * 0.5f;
     float half_arena = g_arena_w() * 0.5f;
     if (cam->x - half < -half_arena) cam->x = -half_arena + half;
     if (cam->x + half >  half_arena) cam->x =  half_arena - half;
+
+    // Dynamic zoom: based on horizontal distance between players
+    float dist = fabsf(p1->body.pos.x - p0->body.pos.x);
+    float sw = (float)g_screen_w();
+    // When dist <= 200: zoom in to 1.4; when dist >= sw*0.7: zoom out to 0.6
+    float min_dist = 200.0f;
+    float max_dist = sw * 0.7f;
+    float t = (dist - min_dist) / (max_dist - min_dist);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    cam->target_zoom = 1.4f - t * 0.8f;  // 1.4 (close) -> 0.6 (far)
+
+    // Smooth zoom interpolation
+    cam->zoom += (cam->target_zoom - cam->zoom) * 0.05f;
 }
 
 // ----------------------------------------------------------------
@@ -146,12 +162,18 @@ void game_fixed_update(GameState *gs) {
 
         NetStatePacket sp;
         if (net_recv_state(&gs->net, &sp)) {
+            // CLIENT: only apply authoritative state to the REMOTE player (p0).
+            // Never overwrite our own (p1) state – that causes the snap/glitch.
             PlayerSync s0 = sp.p0;
-            PlayerSync s1 = sp.p1;
             player_from_sync(&gs->players[0], &s0);
-            player_from_sync(&gs->players[1], &s1);
+            // Preserve local player's live simulation; only update scores.
             gs->players[0].score = sp.p0_score;
             gs->players[1].score = sp.p1_score;
+            // Sync death / respawn state for local player from authoritative source
+            // but don't overwrite position/velocity (anti-glitch).
+            if (sp.p1.state == (uint8_t)STATE_DEAD && gs->players[1].state != STATE_DEAD) {
+                player_kill(&gs->players[1]);
+            }
         }
     }
 
@@ -253,12 +275,18 @@ void game_tick(GameState *gs, float dt) {
 // Rendering helpers
 // ----------------------------------------------------------------
 
+static float g_cam_zoom = 1.0f;  // set each frame before rendering
+static int   g_local_player_id = 0;  // set each frame; used for coloring
+
 static int world_to_screen_x(float world_x, float cam_x) {
-    return (int)(world_x - cam_x + g_screen_w() * 0.5f);
+    float half_sw = (float)g_screen_w() * 0.5f;
+    return (int)((world_x - cam_x) * g_cam_zoom + half_sw);
 }
 
 static int world_to_screen_y(float world_y) {
-    return (int)world_y;
+    // Zoom vertically around the ground line so it stays anchored
+    float ground = g_ground_y();
+    return (int)((world_y - ground) * g_cam_zoom + ground);
 }
 
 static void render_arena(float cam_x) {
@@ -280,7 +308,7 @@ static void render_arena(float cam_x) {
     // Ground slab
     int gx0 = world_to_screen_x(-aw * 0.5f, cam_x);
     int gx1 = world_to_screen_x( aw * 0.5f, cam_x);
-    int gyi = (int)gy;
+    int gyi = world_to_screen_y(gy);   // route through transform so it matches player feet
     DrawRectangle(gx0, gyi, gx1 - gx0, sh - gyi, (Color){45, 38, 55, 255});
     DrawLine(gx0, gyi, gx1, gyi, (Color){180, 140, 200, 255});
 
@@ -297,32 +325,38 @@ static void render_arena(float cam_x) {
     DrawLine(left_goal,  0, left_goal,  sh, (Color){255, 80, 80, 180});
     DrawLine(right_goal, 0, right_goal, sh, (Color){80, 80, 255, 180});
 
-    // Mid platforms — scaled to screen
+    // Mid platforms — route Y through transform
     float plat_y  = gy - sh * 0.22f;
     float plat_w  = sw * 0.16f;
+    int plat_yi   = world_to_screen_y(plat_y);
+    int plat_wi   = (int)plat_w;
     int px0 = world_to_screen_x(-sw * 0.20f, cam_x);
-    DrawRectangle(px0, (int)plat_y, (int)plat_w, 14, (Color){65, 55, 80, 255});
-    DrawLine(px0, (int)plat_y, px0 + (int)plat_w, (int)plat_y, (Color){180, 140, 200, 200});
+    DrawRectangle(px0, plat_yi, plat_wi, 14, (Color){65, 55, 80, 255});
+    DrawLine(px0, plat_yi, px0 + plat_wi, plat_yi, (Color){180, 140, 200, 200});
 
     int px1 = world_to_screen_x(sw * 0.04f, cam_x);
-    DrawRectangle(px1, (int)plat_y, (int)plat_w, 14, (Color){65, 55, 80, 255});
-    DrawLine(px1, (int)plat_y, px1 + (int)plat_w, (int)plat_y, (Color){180, 140, 200, 200});
+    DrawRectangle(px1, plat_yi, plat_wi, 14, (Color){65, 55, 80, 255});
+    DrawLine(px1, plat_yi, px1 + plat_wi, plat_yi, (Color){180, 140, 200, 200});
 }
 
 static void render_player(const Player *p, float cam_x, bool debug) {
     if (!p->ragdoll.active) {
+        // Scale dimensions by zoom so the character appears larger/smaller correctly
+        int h  = (int)(p->body.size.y * g_cam_zoom);
+        int w  = (int)(p->body.size.x * g_cam_zoom);
+        // Anchor to foot position (bottom of body) so player always stands on ground
+        int foot_y     = world_to_screen_y(p->body.pos.y + p->body.size.y);
+        int sy         = foot_y - h;
         int sx = world_to_screen_x(p->body.pos.x + p->body.size.x * 0.5f, cam_x);
-        int sy = world_to_screen_y(p->body.pos.y);
-        int w  = (int)p->body.size.x;
-        int h  = (int)p->body.size.y;
 
-        Color body_color = (p->id == 0) ? (Color){100, 180, 255, 255}
-                                        : (Color){255, 120,  80, 255};
+        // Local player is always blue, opponent always red
+        bool is_local = (p->id == g_local_player_id);
+        Color body_color = is_local ? (Color){100, 180, 255, 255}
+                                    : (Color){255, 120,  80, 255};
         Color stun_flash = (Color){255, 255, 100, 200};
         Color cur_color  = (p->state == STATE_STUNNED && (p->stun_timer % 6 < 3))
                            ? stun_flash : body_color;
 
-        int foot_y     = sy + h;
         int hip_y      = sy + h - h / 3;
         int shoulder_y = sy + h / 3;
         int mid_x      = sx;
@@ -343,8 +377,9 @@ static void render_player(const Player *p, float cam_x, bool debug) {
 
         (void)w;
     } else {
-        Color dead_color = (p->id == 0) ? (Color){60, 100, 160, 200}
-                                        : (Color){160,  70,  40, 200};
+        bool is_local_dead = (p->id == g_local_player_id);
+        Color dead_color = is_local_dead ? (Color){60, 100, 160, 200}
+                                         : (Color){160,  70,  40, 200};
         int alpha_mod = p->ragdoll.timer * 2;
         if (alpha_mod > 255) alpha_mod = 255;
         dead_color.a = (uint8_t)alpha_mod;
@@ -366,16 +401,23 @@ static void render_player(const Player *p, float cam_x, bool debug) {
 
     if (debug) {
         int hx = world_to_screen_x(p->hurtbox.x, cam_x);
-        DrawRectangleLines(hx, (int)p->hurtbox.y, (int)p->hurtbox.w, (int)p->hurtbox.h, GREEN);
+        int hy = world_to_screen_y(p->hurtbox.y);
+        int hw = (int)(p->hurtbox.w * g_cam_zoom);
+        int hh = (int)(p->hurtbox.h * g_cam_zoom);
+        DrawRectangleLines(hx, hy, hw, hh, GREEN);
         if (p->weapon_hitbox.w > 0) {
             int wx = world_to_screen_x(p->weapon_hitbox.x, cam_x);
-            DrawRectangleLines(wx, (int)p->weapon_hitbox.y,
-                               (int)p->weapon_hitbox.w, (int)p->weapon_hitbox.h, RED);
+            int wy = world_to_screen_y(p->weapon_hitbox.y);
+            int ww = (int)(p->weapon_hitbox.w * g_cam_zoom);
+            int wh = (int)(p->weapon_hitbox.h * g_cam_zoom);
+            DrawRectangleLines(wx, wy, ww, wh, RED);
         }
         if (p->parry_box.w > 0) {
             int px2 = world_to_screen_x(p->parry_box.x, cam_x);
-            DrawRectangleLines(px2, (int)p->parry_box.y,
-                               (int)p->parry_box.w, (int)p->parry_box.h, YELLOW);
+            int py2 = world_to_screen_y(p->parry_box.y);
+            int pw  = (int)(p->parry_box.w * g_cam_zoom);
+            int ph  = (int)(p->parry_box.h * g_cam_zoom);
+            DrawRectangleLines(px2, py2, pw, ph, YELLOW);
         }
     }
 }
@@ -424,10 +466,16 @@ static void render_hud(const GameState *gs) {
     int sh = g_screen_h();
     char buf[64];
 
-    snprintf(buf, sizeof(buf), "P1: %d", gs->players[0].score);
+    // local player label and score
+    int local_id = gs->local_player_id;
+    int remote_id = 1 - local_id;
+    const char *local_label  = (gs->mode == MODE_LOCAL) ? "P1" : "YOU";
+    const char *remote_label = (gs->mode == MODE_LOCAL) ? "P2" : "OPP";
+
+    snprintf(buf, sizeof(buf), "%s: %d", local_label, gs->players[local_id].score);
     DrawText(buf, 40, 20, 28, (Color){100, 180, 255, 255});
 
-    snprintf(buf, sizeof(buf), "P2: %d", gs->players[1].score);
+    snprintf(buf, sizeof(buf), "%s: %d", remote_label, gs->players[remote_id].score);
     DrawText(buf, sw - 120, 20, 28, (Color){255, 120, 80, 255});
 
     snprintf(buf, sizeof(buf), "First to %d", WIN_SCORE);
@@ -437,20 +485,23 @@ static void render_hud(const GameState *gs) {
     DrawText(buf, sw - 80, sh - 24, 14, (Color){120, 120, 120, 180});
 
     if (gs->phase == PHASE_ROUND_OVER) {
-        const char *msg = (gs->winner_id == 0) ? "PLAYER 1 WINS ROUND!"
-                                                : "PLAYER 2 WINS ROUND!";
+        bool local_won = (gs->winner_id == gs->local_player_id);
+        const char *msg = local_won ? "YOU WIN THE ROUND!" : "OPPONENT WINS ROUND!";
+        if (gs->mode == MODE_LOCAL)
+            msg = (gs->winner_id == 0) ? "PLAYER 1 WINS ROUND!" : "PLAYER 2 WINS ROUND!";
         int tw = MeasureText(msg, 40);
         DrawText(msg, sw / 2 - tw / 2, sh / 2 - 20, 40,
-                 gs->winner_id == 0 ? (Color){100, 180, 255, 255} : (Color){255, 120, 80, 255});
+                 local_won ? (Color){100, 180, 255, 255} : (Color){255, 120, 80, 255});
     }
 
     if (gs->phase == PHASE_MATCH_OVER) {
-        const char *msg = (gs->players[0].score >= WIN_SCORE) ? "PLAYER 1 WINS!"
-                                                               : "PLAYER 2 WINS!";
+        bool local_won = (gs->players[gs->local_player_id].score >= WIN_SCORE);
+        const char *msg = local_won ? "YOU WIN THE MATCH!" : "OPPONENT WINS!";
+        if (gs->mode == MODE_LOCAL)
+            msg = (gs->players[0].score >= WIN_SCORE) ? "PLAYER 1 WINS!" : "PLAYER 2 WINS!";
         int tw = MeasureText(msg, 52);
         DrawText(msg, sw / 2 - tw / 2, sh / 2 - 50, 52,
-                 gs->players[0].score >= WIN_SCORE ? (Color){100, 180, 255, 255}
-                                                   : (Color){255, 120, 80, 255});
+                 local_won ? (Color){100, 180, 255, 255} : (Color){255, 120, 80, 255});
         DrawText("Press ENTER to play again", sw / 2 - 160, sh / 2 + 20, 24, WHITE);
     }
 
@@ -521,6 +572,8 @@ void game_render(const GameState *gs) {
     }
 
     float cam_x = gs->cam.x;
+    g_cam_zoom = gs->cam.zoom;
+    g_local_player_id = gs->local_player_id;
 
     render_arena(cam_x);
 

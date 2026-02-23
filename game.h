@@ -28,6 +28,8 @@ typedef struct Camera2D_State {
     float x;   // camera center x in world space
     float y;
     float target_x;
+    float zoom;         // current zoom (1.0 = normal)
+    float target_zoom;
 } Camera2D_State;
 
 typedef struct GameState {
