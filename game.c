@@ -125,7 +125,25 @@ void game_fixed_update(GameState *gs) {
     }
 
     if (gs->phase == PHASE_ROUND_OVER) {
-        if (gs->mode != MODE_LOCAL) net_update(&gs->net, gs->frame);
+        if (gs->mode != MODE_LOCAL) {
+            net_update(&gs->net, gs->frame);
+            // CLIENT: keep receiving state packets during round over
+            if (gs->mode == MODE_CLIENT) {
+                NetStatePacket sp;
+                if (net_recv_state(&gs->net, &sp)) {
+                    gs->players[0].score = sp.p0_score;
+                    gs->players[1].score = sp.p1_score;
+                    if ((GamePhase)sp.game_state == PHASE_PLAYING) {
+                        // Host already started next round
+                        PlayerSync s0 = sp.p0, s1 = sp.p1;
+                        player_from_sync(&gs->players[0], &s0);
+                        player_from_sync(&gs->players[1], &s1);
+                        gs->phase = PHASE_PLAYING;
+                        return;
+                    }
+                }
+            }
+        }
         gs->round_over_timer--;
         if (gs->round_over_timer <= 0) {
             if (gs->players[0].score >= WIN_SCORE || gs->players[1].score >= WIN_SCORE) {
@@ -139,6 +157,7 @@ void game_fixed_update(GameState *gs) {
     }
 
     if (gs->phase == PHASE_MATCH_OVER) {
+        if (gs->mode != MODE_LOCAL) net_update(&gs->net, gs->frame);
         if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)) {
             gs->players[0].score = 0;
             gs->players[1].score = 0;
@@ -170,9 +189,11 @@ void game_fixed_update(GameState *gs) {
 
         NetStatePacket sp;
         if (net_recv_state(&gs->net, &sp)) {
-            // CLIENT: apply authoritative remote player (p0) state always
+            // Apply authoritative state for BOTH players from host every packet
             PlayerSync s0 = sp.p0;
+            PlayerSync s1 = sp.p1;
             player_from_sync(&gs->players[0], &s0);
+            player_from_sync(&gs->players[1], &s1);
 
             // Apply authoritative scores
             gs->players[0].score = sp.p0_score;
@@ -187,18 +208,10 @@ void game_fixed_update(GameState *gs) {
             } else if (host_phase == PHASE_MATCH_OVER && gs->phase != PHASE_MATCH_OVER) {
                 gs->phase = PHASE_MATCH_OVER;
                 gs->winner_id = (gs->players[0].score >= WIN_SCORE) ? 0 : 1;
-            }
-
-            // Sync local player (p1) death and respawn from host authority
-            bool host_p1_dead = (sp.p1.state == (uint8_t)STATE_DEAD);
-            bool local_p1_dead = (gs->players[1].state == STATE_DEAD);
-            if (host_p1_dead && !local_p1_dead) {
-                player_kill(&gs->players[1]);
-            }
-            // If host says p1 is alive but we think we're dead, accept respawn position
-            if (!host_p1_dead && local_p1_dead) {
-                PlayerSync s1 = sp.p1;
-                player_from_sync(&gs->players[1], &s1);
+            } else if (host_phase == PHASE_PLAYING && gs->phase == PHASE_ROUND_OVER) {
+                // Host already moved on to next round, follow it
+                game_start_round(gs);
+                gs->phase = PHASE_PLAYING;
             }
         }
     }
@@ -222,8 +235,12 @@ void game_fixed_update(GameState *gs) {
     combat_update_thrown_swords(gs->swords, MAX_THROWN_SWORDS,
                                 &gs->players[0], &gs->players[1], FIXED_DT);
 
-    combat_resolve(&gs->players[0], &gs->players[1],
-                   gs->swords, MAX_THROWN_SWORDS);
+    // Only HOST and LOCAL run authoritative combat resolution.
+    // CLIENT never kills players locally - all kills come from host via NetStatePacket.
+    if (gs->mode != MODE_CLIENT) {
+        combat_resolve(&gs->players[0], &gs->players[1],
+                       gs->swords, MAX_THROWN_SWORDS);
+    }
 
     // Death / respawn handling - HOST and LOCAL only
     // CLIENT receives authoritative kills/scores/phase from NetStatePacket
@@ -260,25 +277,20 @@ void game_fixed_update(GameState *gs) {
 
     update_camera(&gs->cam, &gs->players[0], &gs->players[1]);
 
-    // Host sends authoritative state - every frame during phase transitions, every 2 frames otherwise
+    // Host sends authoritative state every frame - client needs this for position sync
     if (gs->mode == MODE_HOST && net_is_connected(&gs->net)) {
-        static int state_send_counter = 0;
-        state_send_counter++;
-        bool force_send = (gs->phase == PHASE_ROUND_OVER || gs->phase == PHASE_MATCH_OVER);
-        if (force_send || state_send_counter % 2 == 0) {
-            NetStatePacket sp;
-            sp.header.type  = PKT_STATE;
-            sp.header.frame = gs->frame;
-            PlayerSync s0, s1;
-            player_to_sync(&gs->players[0], &s0, gs->frame);
-            player_to_sync(&gs->players[1], &s1, gs->frame);
-            sp.p0 = s0;
-            sp.p1 = s1;
-            sp.game_state = (uint8_t)gs->phase;
-            sp.p0_score   = (uint8_t)gs->players[0].score;
-            sp.p1_score   = (uint8_t)gs->players[1].score;
-            net_send_state(&gs->net, &sp);
-        }
+        NetStatePacket sp;
+        sp.header.type  = PKT_STATE;
+        sp.header.frame = gs->frame;
+        PlayerSync s0, s1;
+        player_to_sync(&gs->players[0], &s0, gs->frame);
+        player_to_sync(&gs->players[1], &s1, gs->frame);
+        sp.p0 = s0;
+        sp.p1 = s1;
+        sp.game_state = (uint8_t)gs->phase;
+        sp.p0_score   = (uint8_t)gs->players[0].score;
+        sp.p1_score   = (uint8_t)gs->players[1].score;
+        net_send_state(&gs->net, &sp);
     }
 
     if (IsKeyPressed(KEY_F1)) gs->debug_hitboxes = !gs->debug_hitboxes;
