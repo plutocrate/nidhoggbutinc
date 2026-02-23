@@ -40,9 +40,9 @@ void physics_update(PhysicsBody *b, float dt, float ground_y) {
     // Clamp tiny velocities to zero
     if (b->vel.x > -0.5f && b->vel.x < 0.5f) b->vel.x = 0.0f;
 
-    // Arena bounds (wide scrolling arena, but clamp to reasonable range)
+    // Arena bounds: fixed world space, independent of screen size
     if (b->pos.x < -2000.0f) b->pos.x = -2000.0f;
-    if (b->pos.x > 2000.0f)  b->pos.x = 2000.0f;
+    if (b->pos.x > 2000.0f)  b->pos.x =  2000.0f;
 }
 
 void physics_apply_jump(PhysicsBody *b) {

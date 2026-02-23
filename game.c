@@ -25,6 +25,9 @@ static void render_menu(GameState *gs);
 static void render_debug_net(const GameState *gs);
 static void render_controls_hint(void);
 
+// Forward declaration - defined later in rendering section
+static float g_cam_zoom = 1.0f;
+
 // ----------------------------------------------------------------
 // Init / Shutdown
 // ----------------------------------------------------------------
@@ -57,18 +60,19 @@ void game_shutdown(GameState *gs) {
 }
 
 void game_start_round(GameState *gs) {
-    int sw = g_screen_w();
-    player_init(&gs->players[0], 0, sw * 0.35f);
-    player_init(&gs->players[1], 1, sw * 0.65f);
+    // Use fixed world coordinates - independent of screen size
+    // Players spawn 200 units left and right of world center (0,0)
+    player_init(&gs->players[0], 0, -200.0f);
+    player_init(&gs->players[1], 1,  200.0f - PLAYER_W);
     gs->players[1].facing = -1;
 
     for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
         gs->swords[i].active = false;
     }
 
-    gs->cam.x = sw * 0.5f;
-    gs->cam.y = g_screen_h() * 0.5f;
-    gs->cam.target_x = gs->cam.x;
+    gs->cam.x = 0.0f;  // world center
+    gs->cam.y = 0.0f;
+    gs->cam.target_x = 0.0f;
     gs->cam.zoom = 1.0f;
     gs->cam.target_zoom = 1.0f;
     gs->round_over_timer = 0;
@@ -84,9 +88,9 @@ static void update_camera(Camera2D_State *cam, const Player *p0, const Player *p
     cam->x += (cam->target_x - cam->x) * 0.08f;
 
     float half  = (float)g_screen_w() * 0.5f;
-    float half_arena = g_arena_w() * 0.5f;
-    if (cam->x - half < -half_arena) cam->x = -half_arena + half;
-    if (cam->x + half >  half_arena) cam->x =  half_arena - half;
+    float half_arena = 2000.0f;  // fixed: arena is 4000 world units wide
+    if (cam->x - half / g_cam_zoom < -half_arena) cam->x = -half_arena + half / g_cam_zoom;
+    if (cam->x + half / g_cam_zoom >  half_arena) cam->x =  half_arena - half / g_cam_zoom;
 
     // Dynamic zoom: based on horizontal distance between players
     float dist = fabsf(p1->body.pos.x - p0->body.pos.x);
@@ -275,8 +279,7 @@ void game_tick(GameState *gs, float dt) {
 // Rendering helpers
 // ----------------------------------------------------------------
 
-static float g_cam_zoom = 1.0f;  // set each frame before rendering
-static int   g_local_player_id = 0;  // set each frame; used for coloring
+static int g_local_player_id = 0;  // set each frame; used for coloring
 
 static int world_to_screen_x(float world_x, float cam_x) {
     float half_sw = (float)g_screen_w() * 0.5f;
@@ -293,11 +296,12 @@ static void render_arena(float cam_x) {
     int sw = g_screen_w();
     int sh = g_screen_h();
     float gy = g_ground_y();
-    float aw = g_arena_w();
+    // Fixed world arena: always 4000 units wide centered at 0
+    float aw = 4000.0f;
 
     ClearBackground((Color){20, 15, 30, 255});
 
-    // Background parallax columns
+    // Background parallax columns (screen-space, purely visual)
     float para = cam_x * 0.3f;
     for (int i = 0; i < 10; i++) {
         float bx = fmodf(i * 160.0f - para * 0.5f, (float)sw + 160.0f) - 80.0f;
@@ -308,35 +312,38 @@ static void render_arena(float cam_x) {
     // Ground slab
     int gx0 = world_to_screen_x(-aw * 0.5f, cam_x);
     int gx1 = world_to_screen_x( aw * 0.5f, cam_x);
-    int gyi = world_to_screen_y(gy);   // route through transform so it matches player feet
+    int gyi = world_to_screen_y(gy);
     DrawRectangle(gx0, gyi, gx1 - gx0, sh - gyi, (Color){45, 38, 55, 255});
     DrawLine(gx0, gyi, gx1, gyi, (Color){180, 140, 200, 255});
 
-    // Floor tiles
+    // Floor tiles every 200 world units
     int num_tiles = (int)(aw / 200.0f) + 2;
     for (int tx = -num_tiles; tx <= num_tiles; tx++) {
         int tile_x = world_to_screen_x(tx * 200.0f, cam_x);
         DrawLine(tile_x, gyi, tile_x, gyi + 8, (Color){80, 60, 90, 200});
     }
 
-    // Goal lines
-    int left_goal  = world_to_screen_x(-aw * 0.5f + 40.0f, cam_x);
-    int right_goal = world_to_screen_x( aw * 0.5f - 40.0f, cam_x);
+    // Goal lines at fixed world positions
+    int left_goal  = world_to_screen_x(-1960.0f, cam_x);
+    int right_goal = world_to_screen_x( 1960.0f, cam_x);
     DrawLine(left_goal,  0, left_goal,  sh, (Color){255, 80, 80, 180});
     DrawLine(right_goal, 0, right_goal, sh, (Color){80, 80, 255, 180});
 
-    // Mid platforms — route Y through transform
-    float plat_y  = gy - sh * 0.22f;
-    float plat_w  = sw * 0.16f;
-    int plat_yi   = world_to_screen_y(plat_y);
-    int plat_wi   = (int)plat_w;
-    int px0 = world_to_screen_x(-sw * 0.20f, cam_x);
+    // Mid platforms at fixed world positions (platforms at -300 and +100, y = 180 world units above ground)
+    float plat_world_y = gy - 180.0f;   // fixed height above ground in world units
+    float plat_world_w = 300.0f;        // fixed width in world units
+    int plat_yi = world_to_screen_y(plat_world_y);
+    int plat_wi = (int)(plat_world_w * g_cam_zoom);
+
+    int px0 = world_to_screen_x(-400.0f, cam_x);
     DrawRectangle(px0, plat_yi, plat_wi, 14, (Color){65, 55, 80, 255});
     DrawLine(px0, plat_yi, px0 + plat_wi, plat_yi, (Color){180, 140, 200, 200});
 
-    int px1 = world_to_screen_x(sw * 0.04f, cam_x);
+    int px1 = world_to_screen_x( 100.0f, cam_x);
     DrawRectangle(px1, plat_yi, plat_wi, 14, (Color){65, 55, 80, 255});
     DrawLine(px1, plat_yi, px1 + plat_wi, plat_yi, (Color){180, 140, 200, 200});
+
+    (void)sw;
 }
 
 static void render_player(const Player *p, float cam_x, bool debug) {
