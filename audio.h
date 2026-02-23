@@ -19,6 +19,7 @@ typedef struct AudioState {
     Sound sfx_hit;          // sword hits body (death blow)
     Sound sfx_parry_clash;  // perfect parry / sword clash (BaseMetal)
     Sound sfx_parry_normal; // normal parry deflect (PullingWeapon)
+    Sound sfx_block;        // parry button pressed but nothing connected
     Sound sfx_grunt_attack; // attacker grunt
     Sound sfx_grunt_death;  // death scream
     Sound sfx_footstep;     // footstep

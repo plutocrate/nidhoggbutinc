@@ -27,6 +27,7 @@ bool audio_init(AudioState *a) {
     a->sfx_hit           = load_sfx("WEAPSwrd_SwordStabCombowRing_HoveAud_SwordCombat_17.wav");
     a->sfx_parry_clash   = load_sfx("WEAPSwrd_BaseMetal_HoveAud_SwordCombat_03.wav");
     a->sfx_parry_normal  = load_sfx("Pulling_Small_Weapon_Out_2.wav");
+    a->sfx_block         = load_sfx("Random_Noise_3.wav");
     a->sfx_grunt_attack  = load_sfx("VOXEfrt_ActionGrunt_HoveAud_SwordCombat_54.wav");
     a->sfx_grunt_death   = load_sfx("VOXScrm_DamageGrunt_HoveAudio_SwordCombat_13.wav");
     a->sfx_footstep      = load_sfx("Antons_Footsteps_FS_Sand_Walk_03.wav");
@@ -48,6 +49,7 @@ void audio_shutdown(AudioState *a) {
     UnloadSound(a->sfx_hit);
     UnloadSound(a->sfx_parry_clash);
     UnloadSound(a->sfx_parry_normal);
+    UnloadSound(a->sfx_block);
     UnloadSound(a->sfx_grunt_attack);
     UnloadSound(a->sfx_grunt_death);
     UnloadSound(a->sfx_footstep);
@@ -106,6 +108,17 @@ void audio_update(AudioState *a,
         bool just_attacked = (prev != STATE_ATTACK && p->state == STATE_ATTACK);
         bool just_thrown   = (prev != STATE_THROW  && p->state == STATE_THROW);
         bool just_jumped   = (prev_on_ground[i] && !p->body.on_ground && inputs[i].jump);
+        bool just_parried  = (prev != STATE_PARRY  && p->state == STATE_PARRY);
+
+        // Block: parry button pressed but nothing connected this frame
+        // (if something DID connect, the parry_normal/clash sounds cover it instead)
+        bool parry_connected = (combat.p0_hit == HIT_PARRY || combat.p1_hit == HIT_PARRY
+                                || combat.sword_clash);
+        if (just_parried && !parry_connected) {
+            SetSoundPitch(a->sfx_block, rand_pitch(0.08f));
+            SetSoundVolume(a->sfx_block, 0.70f);
+            PlaySound(a->sfx_block);
+        }
 
         // Sword gained this frame and player wasn't throwing (throw gives sword to opponent)
         bool just_picked_up = (!pa->prev_has_sword && p->has_sword &&
