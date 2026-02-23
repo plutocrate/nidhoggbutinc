@@ -92,7 +92,8 @@ void player_compute_boxes(Player *p) {
     }
 }
 
-void player_update(Player *p, const Input *in, float dt) {
+void player_update(Player *p, const Input *in, float dt,
+                   const Platform *plats, int num_plats) {
     if (p->state == STATE_DEAD) {
         player_update_ragdoll(p, dt);
         if (p->respawn_timer > 0) p->respawn_timer--;
@@ -120,6 +121,13 @@ void player_update(Player *p, const Input *in, float dt) {
             p->body.size.y = CROUCH_H;
         } else {
             p->body.size.y = PLAYER_HEIGHT;
+        }
+
+        // Drop through one-way platforms: tap down while standing on one
+        if (in->crouch && p->body.on_ground && !p->on_main_ground) {
+            p->body.drop_through = true;
+            p->body.on_ground    = false;
+            p->body.pos.y       += 2.0f;  // nudge below surface so we don't immediately re-land
         }
     }
 
@@ -172,7 +180,25 @@ void player_update(Player *p, const Input *in, float dt) {
         }
     }
 
+    // Record foot position before physics integrates
+    float prev_bottom = p->body.pos.y + p->body.size.y;
+
     physics_update(&p->body, dt, g_ground_y());
+
+    // Track whether player landed on the main ground (not a platform)
+    p->on_main_ground = (p->body.on_ground);
+
+    // Resolve one-way platforms (overrides on_ground if landing on one)
+    if (!p->body.drop_through) {
+        physics_resolve_platforms(&p->body, prev_bottom, plats, num_plats);
+        if (p->body.on_ground && !p->on_main_ground) {
+            p->on_main_ground = false;  // standing on platform, not main ground
+        }
+    }
+
+    // Clear drop_through after one frame
+    p->body.drop_through = false;
+
     compute_sword(p);
     player_compute_boxes(p);
 }

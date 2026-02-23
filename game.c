@@ -82,6 +82,20 @@ void game_start_round(GameState *gs) {
     gs->cam.target_zoom = 1.0f;
     gs->round_over_timer = 0;
     gs->winner_id = -1;
+
+    // Platform layout (one-way, climbable from below, droppable with down)
+    // All Y values are top-surface in world space; WORLD_GROUND = 620
+    gs->num_platforms = 6;
+    // Low side platforms (~100 units up)
+    gs->platforms[0] = (Platform){ -700.0f, 620.0f - 130.0f, 220.0f };  // left-low
+    gs->platforms[1] = (Platform){  480.0f, 620.0f - 130.0f, 220.0f };  // right-low
+    // Mid platforms (~220 units up)
+    gs->platforms[2] = (Platform){ -380.0f, 620.0f - 220.0f, 280.0f };  // left-mid
+    gs->platforms[3] = (Platform){  100.0f, 620.0f - 220.0f, 280.0f };  // right-mid
+    // High centre platform (~340 units up)
+    gs->platforms[4] = (Platform){ -150.0f, 620.0f - 340.0f, 300.0f };  // centre-high
+    // Far side ledges (~160 units up)
+    gs->platforms[5] = (Platform){ -1100.0f, 620.0f - 160.0f, 180.0f }; // far-left
 }
 
 // ----------------------------------------------------------------
@@ -225,8 +239,8 @@ void game_fixed_update(GameState *gs) {
         }
     }
 
-    player_update(&gs->players[0], &p0_in, FIXED_DT);
-    player_update(&gs->players[1], &p1_in, FIXED_DT);
+    player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
+    player_update(&gs->players[1], &p1_in, FIXED_DT, gs->platforms, gs->num_platforms);
 
     // Spawn thrown sword on first frame of throw state
     for (int pid = 0; pid < 2; pid++) {
@@ -387,22 +401,25 @@ static void render_arena(float cam_x) {
     DrawLine(left_goal,  0, left_goal,  sh, (Color){255, 80, 80, 180});
     DrawLine(right_goal, 0, right_goal, sh, (Color){80, 80, 255, 180});
 
-    // Mid platforms at fixed world positions
-    float plat_world_y = WORLD_GROUND - 180.0f;   // 180 world units above ground
-    float plat_world_w = 300.0f;
-    int plat_yi = world_to_screen_y(plat_world_y);
-    int plat_wi = (int)(plat_world_w * world_scale() * g_cam_zoom);
-
-    int px0 = world_to_screen_x(-400.0f, cam_x);
-    DrawRectangle(px0, plat_yi, plat_wi, 14, (Color){65, 55, 80, 255});
-    DrawLine(px0, plat_yi, px0 + plat_wi, plat_yi, (Color){180, 140, 200, 200});
-
-    int px1 = world_to_screen_x( 100.0f, cam_x);
-    DrawRectangle(px1, plat_yi, plat_wi, 14, (Color){65, 55, 80, 255});
-    DrawLine(px1, plat_yi, px1 + plat_wi, plat_yi, (Color){180, 140, 200, 200});
-
+    // One-way platforms - rendered from game state data
+    // NOTE: render_arena is called with cam_x only; platform data passed via g_platforms
     (void)sw;
     (void)gy;
+}
+
+// Platform rendering helper called from game_render with full gs access
+static void render_platforms(const GameState *gs, float cam_x) {
+    for (int i = 0; i < gs->num_platforms; i++) {
+        const Platform *p = &gs->platforms[i];
+        int px  = world_to_screen_x(p->x, cam_x);
+        int py  = world_to_screen_y(p->y);
+        int pw  = (int)(p->w * world_scale() * g_cam_zoom);
+        DrawRectangle(px, py, pw, 14, (Color){65, 55, 80, 255});
+        DrawLine(px, py, px + pw, py, (Color){180, 140, 200, 200});
+        // Small edge caps
+        DrawLine(px,      py, px,      py + 8, (Color){140, 110, 160, 180});
+        DrawLine(px + pw, py, px + pw, py + 8, (Color){140, 110, 160, 180});
+    }
 }
 
 static void render_player(const Player *p, float cam_x, bool debug) {
@@ -649,6 +666,7 @@ void game_render(const GameState *gs) {
     g_local_player_id = gs->local_player_id;
 
     render_arena(cam_x);
+    render_platforms(gs, cam_x);
 
     for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
         render_thrown_sword(&gs->swords[i], cam_x);

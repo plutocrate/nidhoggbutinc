@@ -60,6 +60,31 @@ void physics_apply_walk(PhysicsBody *b, float dir, float dt) {
     if (b->vel.x < -WALK_SPEED) b->vel.x = -WALK_SPEED;
 }
 
+bool physics_resolve_platforms(PhysicsBody *b, float prev_bottom,
+                               const Platform *plats, int num_plats) {
+    if (b->drop_through) return false;
+
+    float cur_bottom = b->pos.y + b->size.y;
+    bool landed = false;
+
+    for (int i = 0; i < num_plats; i++) {
+        const Platform *p = &plats[i];
+        // Horizontal overlap check
+        if (b->pos.x + b->size.x <= p->x || b->pos.x >= p->x + p->w) continue;
+        // One-way: only collide when falling downward AND feet crossed the surface this frame
+        if (b->vel.y < 0.0f) continue;                // moving up — pass through
+        if (prev_bottom > p->y + 2.0f) continue;      // was already below surface — pass through
+        if (cur_bottom < p->y) continue;               // haven't reached surface yet
+        // Land on top
+        b->pos.y = p->y - b->size.y;
+        b->vel.y = 0.0f;
+        b->on_ground = true;
+        landed = true;
+        break;  // only one platform at a time
+    }
+    return landed;
+}
+
 bool rect_overlap(Rect a, Rect b) {
     return (a.x < b.x + b.w) && (a.x + a.w > b.x) &&
            (a.y < b.y + b.h) && (a.y + a.h > b.y);

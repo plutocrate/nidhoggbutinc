@@ -39,6 +39,7 @@ typedef struct Player {
     int         state_timer;   // frames remaining in state
     bool        has_sword;
     bool        crouching;
+    bool        on_main_ground;  // true when standing on the floor, false when on a platform
 
     // hitbox / hurtbox
     Rect        hurtbox;       // body hurtbox
@@ -61,7 +62,8 @@ typedef struct Player {
 } Player;
 
 void player_init(Player *p, int id, float x);
-void player_update(Player *p, const Input *in, float dt);
+void player_update(Player *p, const Input *in, float dt,
+                   const Platform *plats, int num_plats);
 void player_compute_boxes(Player *p);
 
 // Returns sword hitbox rect in world space (only valid during attack)

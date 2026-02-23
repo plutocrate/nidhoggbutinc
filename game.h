@@ -37,6 +37,9 @@ typedef struct GameState {
     ThrowingSword  swords[MAX_THROWN_SWORDS];
     int            num_active_swords;
 
+    Platform       platforms[MAX_PLATFORMS];
+    int            num_platforms;
+
     GameMode       mode;
     GamePhase      phase;
     int            local_player_id;  // 0 or 1 (in net mode)
