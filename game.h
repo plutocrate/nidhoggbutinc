@@ -57,6 +57,10 @@ typedef struct GameState {
     // Network
     NetState       net;
 
+    // Input buffers: polled once per render frame, consumed per fixed update
+    InputBuffer    input_buf_p1;
+    InputBuffer    input_buf_p2;
+
     // Menu
     char           ip_input[64];
     int            ip_cursor;

@@ -122,9 +122,9 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    SetConfigFlags(FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI | FLAG_FULLSCREEN_MODE);
+    SetConfigFlags(FLAG_WINDOW_HIGHDPI | FLAG_FULLSCREEN_MODE);
     InitWindow(0, 0, "DUEL - A Nidhogg-inspired Game");  // 0,0 = use monitor resolution
-    SetTargetFPS(0);
+    SetTargetFPS(0);  // uncapped - fixed timestep accumulator controls simulation rate
     SetExitKey(KEY_NULL);  // Disable default exit on ESC
 
     // Platform init for networking

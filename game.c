@@ -174,15 +174,15 @@ void game_fixed_update(GameState *gs) {
     memset(&p1_in, 0, sizeof(p1_in));
 
     if (gs->mode == MODE_LOCAL) {
-        p0_in = input_gather_p1(gs->frame);
-        p1_in = input_gather_p2(gs->frame);
+        input_buffer_consume(&gs->input_buf_p1, &p0_in, gs->frame);
+        input_buffer_consume(&gs->input_buf_p2, &p1_in, gs->frame);
     } else if (gs->mode == MODE_HOST) {
-        p0_in = input_gather_p1(gs->frame);
+        input_buffer_consume(&gs->input_buf_p1, &p0_in, gs->frame);
         net_push_local_input(&gs->net, &p0_in);
         net_get_remote_input(&gs->net, gs->frame, &p1_in);
         net_update(&gs->net, gs->frame);
     } else { // CLIENT
-        p1_in = input_gather_p1(gs->frame);
+        input_buffer_consume(&gs->input_buf_p1, &p1_in, gs->frame);
         net_push_local_input(&gs->net, &p1_in);
         net_get_remote_input(&gs->net, gs->frame, &p0_in);
         net_update(&gs->net, gs->frame);
@@ -302,18 +302,19 @@ void game_fixed_update(GameState *gs) {
         net_send_state(&gs->net, &sp);
     }
 
-    if (IsKeyPressed(KEY_F1)) gs->debug_hitboxes = !gs->debug_hitboxes;
-    if (IsKeyPressed(KEY_F2)) gs->debug_network  = !gs->debug_network;
-    // F11: toggle fullscreen at runtime
-    if (IsKeyPressed(KEY_F11)) ToggleFullscreen();
-
     gs->frame++;
 }
-
-// ----------------------------------------------------------------
-// Main tick with fixed timestep accumulator
-// ----------------------------------------------------------------
 void game_tick(GameState *gs, float dt) {
+    // Poll inputs ONCE per real render frame so IsKeyPressed() edge events
+    // are latched into the buffers before any fixed update runs.
+    input_buffer_poll_p1(&gs->input_buf_p1);
+    input_buffer_poll_p2(&gs->input_buf_p2);
+
+    // Debug toggles: also sampled once per render frame, never inside fixed update
+    if (IsKeyPressed(KEY_F1))  gs->debug_hitboxes = !gs->debug_hitboxes;
+    if (IsKeyPressed(KEY_F2))  gs->debug_network  = !gs->debug_network;
+    if (IsKeyPressed(KEY_F11)) ToggleFullscreen();
+
     gs->dt_accum += dt;
     if (gs->dt_accum > FIXED_DT * 8) gs->dt_accum = FIXED_DT * 8;
     while (gs->dt_accum >= FIXED_DT) {

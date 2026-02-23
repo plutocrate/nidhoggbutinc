@@ -6,6 +6,51 @@ void input_init(void) {
     // Nothing to initialize currently
 }
 
+// --------------------------------------------------------------------------
+// InputBuffer: poll once per render frame, consume once per fixed update
+// --------------------------------------------------------------------------
+
+void input_buffer_poll_p1(InputBuffer *buf) {
+    buf->left   = IsKeyDown(KEY_A);
+    buf->right  = IsKeyDown(KEY_D);
+    buf->crouch = IsKeyDown(KEY_S);
+    // OR-latch: set if pressed this render frame, never cleared by poll
+    if (IsKeyPressed(KEY_W))  buf->jump         = true;
+    if (IsKeyPressed(KEY_J))  buf->attack       = true;
+    if (IsKeyPressed(KEY_K))  buf->parry        = true;
+    if (IsKeyPressed(KEY_L))  buf->throw_weapon = true;
+}
+
+void input_buffer_poll_p2(InputBuffer *buf) {
+    buf->left   = IsKeyDown(KEY_LEFT);
+    buf->right  = IsKeyDown(KEY_RIGHT);
+    buf->crouch = IsKeyDown(KEY_DOWN);
+    if (IsKeyPressed(KEY_UP))     buf->jump         = true;
+    if (IsKeyPressed(KEY_KP_1))   buf->attack       = true;
+    if (IsKeyPressed(KEY_KP_2))   buf->parry        = true;
+    if (IsKeyPressed(KEY_KP_3))   buf->throw_weapon = true;
+}
+
+void input_buffer_consume(InputBuffer *buf, Input *in, uint32_t frame) {
+    in->frame        = frame;
+    in->left         = buf->left;
+    in->right        = buf->right;
+    in->crouch       = buf->crouch;
+    in->jump         = buf->jump;
+    in->attack       = buf->attack;
+    in->parry        = buf->parry;
+    in->throw_weapon = buf->throw_weapon;
+    // Clear edge-triggered buttons so they fire exactly once per press
+    buf->jump         = false;
+    buf->attack       = false;
+    buf->parry        = false;
+    buf->throw_weapon = false;
+}
+
+// --------------------------------------------------------------------------
+// Legacy one-shot gather (kept for network code path)
+// --------------------------------------------------------------------------
+
 Input input_gather_p1(uint32_t frame) {
     Input in;
     memset(&in, 0, sizeof(in));
