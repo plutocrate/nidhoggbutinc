@@ -170,7 +170,7 @@ void game_fixed_update(GameState *gs) {
 
         NetStatePacket sp;
         if (net_recv_state(&gs->net, &sp)) {
-            // CLIENT: apply authoritative remote player state
+            // CLIENT: apply authoritative remote player (p0) state always
             PlayerSync s0 = sp.p0;
             player_from_sync(&gs->players[0], &s0);
 
@@ -183,16 +183,22 @@ void game_fixed_update(GameState *gs) {
             if (host_phase == PHASE_ROUND_OVER && gs->phase == PHASE_PLAYING) {
                 gs->phase = PHASE_ROUND_OVER;
                 gs->round_over_timer = 180;
-                // winner is whoever has more score
                 gs->winner_id = (gs->players[0].score > gs->players[1].score) ? 0 : 1;
             } else if (host_phase == PHASE_MATCH_OVER && gs->phase != PHASE_MATCH_OVER) {
                 gs->phase = PHASE_MATCH_OVER;
                 gs->winner_id = (gs->players[0].score >= WIN_SCORE) ? 0 : 1;
             }
 
-            // Sync local player death from authoritative source
-            if (sp.p1.state == (uint8_t)STATE_DEAD && gs->players[1].state != STATE_DEAD) {
+            // Sync local player (p1) death and respawn from host authority
+            bool host_p1_dead = (sp.p1.state == (uint8_t)STATE_DEAD);
+            bool local_p1_dead = (gs->players[1].state == STATE_DEAD);
+            if (host_p1_dead && !local_p1_dead) {
                 player_kill(&gs->players[1]);
+            }
+            // If host says p1 is alive but we think we're dead, accept respawn position
+            if (!host_p1_dead && local_p1_dead) {
+                PlayerSync s1 = sp.p1;
+                player_from_sync(&gs->players[1], &s1);
             }
         }
     }
@@ -219,33 +225,36 @@ void game_fixed_update(GameState *gs) {
     combat_resolve(&gs->players[0], &gs->players[1],
                    gs->swords, MAX_THROWN_SWORDS);
 
-    // Death / respawn handling
-    for (int i = 0; i < 2; i++) {
-        Player *dead  = &gs->players[i];
-        Player *alive = &gs->players[1 - i];
+    // Death / respawn handling - HOST and LOCAL only
+    // CLIENT receives authoritative kills/scores/phase from NetStatePacket
+    if (gs->mode != MODE_CLIENT) {
+        for (int i = 0; i < 2; i++) {
+            Player *dead  = &gs->players[i];
+            Player *alive = &gs->players[1 - i];
 
-        if (dead->state == STATE_DEAD && dead->respawn_timer == 119) {
-            alive->score++;
-            gs->winner_id = alive->id;
-            if (alive->score >= WIN_SCORE) {
-                gs->phase = PHASE_MATCH_OVER;
-            } else {
-                gs->phase = PHASE_ROUND_OVER;
-                gs->round_over_timer = 180;
+            if (dead->state == STATE_DEAD && dead->respawn_timer == 119) {
+                alive->score++;
+                gs->winner_id = alive->id;
+                if (alive->score >= WIN_SCORE) {
+                    gs->phase = PHASE_MATCH_OVER;
+                } else {
+                    gs->phase = PHASE_ROUND_OVER;
+                    gs->round_over_timer = 180;
+                }
             }
-        }
 
-        if (dead->state == STATE_DEAD && dead->respawn_timer == 0) {
-            float respawn_x;
-            int   respawn_facing;
-            if (dead->id == 0) {
-                respawn_x      = alive->body.pos.x - 120.0f;
-                respawn_facing = 1;
-            } else {
-                respawn_x      = alive->body.pos.x + 120.0f;
-                respawn_facing = -1;
+            if (dead->state == STATE_DEAD && dead->respawn_timer == 0) {
+                float respawn_x;
+                int   respawn_facing;
+                if (dead->id == 0) {
+                    respawn_x      = alive->body.pos.x - 120.0f;
+                    respawn_facing = 1;
+                } else {
+                    respawn_x      = alive->body.pos.x + 120.0f;
+                    respawn_facing = -1;
+                }
+                player_respawn(dead, respawn_x, respawn_facing);
             }
-            player_respawn(dead, respawn_x, respawn_facing);
         }
     }
 
