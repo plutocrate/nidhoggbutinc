@@ -8,6 +8,10 @@
 #include <stdint.h>
 
 #ifdef _WIN32
+  #define WIN32_LEAN_AND_MEAN  // strips rarely-used Win32 APIs (GDI, USER, etc.)
+  #define NOGDI                // exclude GDI: removes Rectangle() conflict
+  #define NOUSER               // exclude USER: removes DrawText/CloseWindow/ShowCursor conflicts
+  #define MMNOSOUND            // exclude mmsystem sound: removes PlaySound conflict
   #include <winsock2.h>
   #include <ws2tcpip.h>
   #pragma comment(lib, "ws2_32.lib")
