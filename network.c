@@ -262,6 +262,7 @@ static void net_handle_packet(NetState *net, const uint8_t *buf, int len,
         case PKT_START: {
             if (net->role == NET_CLIENT) {
                 net->match_started = true;
+                net->connected = true;  // ensure connected is set
             }
             break;
         }
