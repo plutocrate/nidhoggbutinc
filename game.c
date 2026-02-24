@@ -228,37 +228,9 @@ void game_fixed_update(GameState *gs) {
         net_push_local_input(&gs->net, &p1_in);
         net_get_remote_input(&gs->net, gs->frame, &p0_in);
         net_update(&gs->net, gs->frame);
-
-        NetStatePacket sp;
-        if (net_recv_state(&gs->net, &sp)) {
-            // HOST IS AUTHORITATIVE: apply full state for both players.
-            // The host runs the real simulation; the client just renders it.
-            // Snapping directly to host state is correct and prevents divergence.
-            PlayerSync s0 = sp.p0, s1 = sp.p1;  // copy out of packed struct before taking address
-            player_from_sync(&gs->players[0], &s0);
-            player_from_sync(&gs->players[1], &s1);
-
-            // Apply authoritative scores
-            gs->players[0].score = sp.p0_score;
-            gs->players[1].score = sp.p1_score;
-
-            // Apply authoritative game phase from host
-            GamePhase host_phase = (GamePhase)sp.game_state;
-            if (host_phase == PHASE_ROUND_OVER && gs->phase == PHASE_PLAYING) {
-                gs->phase = PHASE_ROUND_OVER;
-                gs->round_over_timer = 180;
-                gs->winner_id = (gs->players[0].score > gs->players[1].score) ? 0 : 1;
-            } else if (host_phase == PHASE_MATCH_OVER && gs->phase != PHASE_MATCH_OVER) {
-                gs->phase = PHASE_MATCH_OVER;
-                gs->winner_id = (gs->players[0].score >= WIN_SCORE) ? 0 : 1;
-            } else if (host_phase == PHASE_PLAYING && gs->phase == PHASE_ROUND_OVER) {
-                game_start_round(gs);
-                gs->phase = PHASE_PLAYING;
-            }
-        }
     }
 
-    // Snapshot state BEFORE player_update so audio can detect transitions
+    // Snapshot state BEFORE simulation so audio can detect transitions
     PlayerState prev_states[2] = {
         gs->players[0].state,
         gs->players[1].state,
@@ -272,14 +244,17 @@ void game_fixed_update(GameState *gs) {
     player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
     player_update(&gs->players[1], &p1_in, FIXED_DT, gs->platforms, gs->num_platforms);
 
-    // Spawn thrown sword on first frame of throw state
-    for (int pid = 0; pid < 2; pid++) {
-        Player *p = &gs->players[pid];
-        if (p->state == STATE_THROW && p->state_timer == 7) {
-            for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
-                if (!gs->swords[i].active) {
-                    combat_throw_sword(p, &gs->swords[i]);
-                    break;
+    // Spawn thrown sword on first frame of throw state.
+    // CLIENT skips this - host state packet drives sword spawning to avoid duplicates.
+    if (gs->mode != MODE_CLIENT) {
+        for (int pid = 0; pid < 2; pid++) {
+            Player *p = &gs->players[pid];
+            if (p->state == STATE_THROW && p->state_timer == 7) {
+                for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
+                    if (!gs->swords[i].active) {
+                        combat_throw_sword(p, &gs->swords[i]);
+                        break;
+                    }
                 }
             }
         }
@@ -296,7 +271,34 @@ void game_fixed_update(GameState *gs) {
                                        gs->swords, MAX_THROWN_SWORDS);
     }
 
-    // Audio: fire sound triggers based on state transitions and combat result
+    // CLIENT: apply authoritative host state AFTER local simulation.
+    // Audio snapshot was taken before simulation, so transitions are detected correctly.
+    if (gs->mode == MODE_CLIENT) {
+        NetStatePacket sp;
+        if (net_recv_state(&gs->net, &sp)) {
+            PlayerSync s0 = sp.p0, s1 = sp.p1;
+            player_from_sync(&gs->players[0], &s0);
+            player_from_sync(&gs->players[1], &s1);
+
+            gs->players[0].score = sp.p0_score;
+            gs->players[1].score = sp.p1_score;
+
+            GamePhase host_phase = (GamePhase)sp.game_state;
+            if (host_phase == PHASE_ROUND_OVER && gs->phase == PHASE_PLAYING) {
+                gs->phase = PHASE_ROUND_OVER;
+                gs->round_over_timer = 180;
+                gs->winner_id = (gs->players[0].score > gs->players[1].score) ? 0 : 1;
+            } else if (host_phase == PHASE_MATCH_OVER && gs->phase != PHASE_MATCH_OVER) {
+                gs->phase = PHASE_MATCH_OVER;
+                gs->winner_id = (gs->players[0].score >= WIN_SCORE) ? 0 : 1;
+            } else if (host_phase == PHASE_PLAYING && gs->phase == PHASE_ROUND_OVER) {
+                game_start_round(gs);
+                gs->phase = PHASE_PLAYING;
+            }
+        }
+    }
+
+    // Audio: state transitions detected from pre-simulation snapshot vs post-correction state
     audio_update(&gs->audio, gs->players, prev_states, prev_on_ground,
                  combat_result, cur_inputs);
 
