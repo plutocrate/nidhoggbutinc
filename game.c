@@ -228,57 +228,33 @@ void game_fixed_update(GameState *gs) {
         net_push_local_input(&gs->net, &p1_in);
         net_get_remote_input(&gs->net, gs->frame, &p0_in);
         net_update(&gs->net, gs->frame);
-    }
 
-    // Snapshot state BEFORE simulation so audio can detect transitions
-    PlayerState prev_states[2] = {
-        gs->players[0].state,
-        gs->players[1].state,
-    };
-    bool prev_on_ground[2] = {
-        gs->players[0].body.on_ground,
-        gs->players[1].body.on_ground,
-    };
-    Input cur_inputs[2] = { p0_in, p1_in };
-
-    player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
-    player_update(&gs->players[1], &p1_in, FIXED_DT, gs->platforms, gs->num_platforms);
-
-    // Spawn thrown sword on first frame of throw state.
-    // CLIENT skips this - host state packet drives sword spawning to avoid duplicates.
-    if (gs->mode != MODE_CLIENT) {
-        for (int pid = 0; pid < 2; pid++) {
-            Player *p = &gs->players[pid];
-            if (p->state == STATE_THROW && p->state_timer == 7) {
-                for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
-                    if (!gs->swords[i].active) {
-                        combat_throw_sword(p, &gs->swords[i]);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    combat_update_thrown_swords(gs->swords, MAX_THROWN_SWORDS,
-                                &gs->players[0], &gs->players[1], FIXED_DT);
-
-    // Only HOST and LOCAL run authoritative combat resolution.
-    // CLIENT never kills players locally - all kills come from host via NetStatePacket.
-    CombatResult combat_result = {HIT_NONE, HIT_NONE, false};
-    if (gs->mode != MODE_CLIENT) {
-        combat_result = combat_resolve(&gs->players[0], &gs->players[1],
-                                       gs->swords, MAX_THROWN_SWORDS);
-    }
-
-    // CLIENT: apply authoritative host state AFTER local simulation.
-    // Audio snapshot was taken before simulation, so transitions are detected correctly.
-    if (gs->mode == MODE_CLIENT) {
+        // Apply host state for the REMOTE player (p0) only, before simulation.
+        // We NEVER overwrite p1 (local player) position/velocity so jump/movement
+        // is instantly responsive via local prediction.
         NetStatePacket sp;
         if (net_recv_state(&gs->net, &sp)) {
-            PlayerSync s0 = sp.p0, s1 = sp.p1;
+            // Remote player: always snap to host truth
+            PlayerSync s0 = sp.p0;
             player_from_sync(&gs->players[0], &s0);
-            player_from_sync(&gs->players[1], &s1);
+
+            // Local player (p1): only sync has_sword and combat state from host.
+            // Preserving pos/vel means local prediction keeps working.
+            // has_sword must come from host to stay authoritative (throw/pickup).
+            gs->players[1].has_sword   = sp.p1.has_sword != 0;
+            gs->players[1].stun_timer  = sp.p1.stun_timer;
+            if (sp.p1.state == (uint8_t)STATE_STUNNED)
+                gs->players[1].state = STATE_STUNNED;
+
+            // Death: accept from host, never kill locally
+            if (sp.p1.state == (uint8_t)STATE_DEAD && gs->players[1].state != STATE_DEAD) {
+                player_kill(&gs->players[1]);
+            }
+            // Respawn: host says we're alive again, accept full state
+            if (sp.p1.state != (uint8_t)STATE_DEAD && gs->players[1].state == STATE_DEAD) {
+                PlayerSync s1 = sp.p1;
+                player_from_sync(&gs->players[1], &s1);
+            }
 
             gs->players[0].score = sp.p0_score;
             gs->players[1].score = sp.p1_score;
@@ -298,7 +274,46 @@ void game_fixed_update(GameState *gs) {
         }
     }
 
-    // Audio: state transitions detected from pre-simulation snapshot vs post-correction state
+    // Snapshot state BEFORE simulation so audio can detect transitions
+    PlayerState prev_states[2] = {
+        gs->players[0].state,
+        gs->players[1].state,
+    };
+    bool prev_on_ground[2] = {
+        gs->players[0].body.on_ground,
+        gs->players[1].body.on_ground,
+    };
+    Input cur_inputs[2] = { p0_in, p1_in };
+
+    player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
+    player_update(&gs->players[1], &p1_in, FIXED_DT, gs->platforms, gs->num_platforms);
+
+    // Spawn thrown sword: both host and client spawn locally for instant visual feedback.
+    // has_sword is authoritative from host so they stay in sync.
+    for (int pid = 0; pid < 2; pid++) {
+        Player *p = &gs->players[pid];
+        if (p->state == STATE_THROW && p->state_timer == 7) {
+            for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
+                if (!gs->swords[i].active) {
+                    combat_throw_sword(p, &gs->swords[i]);
+                    break;
+                }
+            }
+        }
+    }
+
+    combat_update_thrown_swords(gs->swords, MAX_THROWN_SWORDS,
+                                &gs->players[0], &gs->players[1], FIXED_DT);
+
+    // Only HOST and LOCAL run authoritative combat resolution.
+    // CLIENT never kills players locally - all kills come from host via NetStatePacket.
+    CombatResult combat_result = {HIT_NONE, HIT_NONE, false};
+    if (gs->mode != MODE_CLIENT) {
+        combat_result = combat_resolve(&gs->players[0], &gs->players[1],
+                                       gs->swords, MAX_THROWN_SWORDS);
+    }
+
+    // Audio: fire based on state transitions (pre vs post simulation)
     audio_update(&gs->audio, gs->players, prev_states, prev_on_ground,
                  combat_result, cur_inputs);
 
