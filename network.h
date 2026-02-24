@@ -61,10 +61,23 @@ typedef struct NetInputPacket {
     uint8_t   input_data[5];  // serialized Input
 } __attribute__((packed)) NetInputPacket;
 
+// Compact sword state for network sync (4 swords * 21 bytes = 84 bytes)
+typedef struct SwordSync {
+    float   px, py;       // position
+    float   vx, vy;       // velocity
+    float   angle;
+    float   angle_vel;
+    uint8_t active;
+    uint8_t owner;        // player id (0 or 1)
+    uint8_t rebounding;
+    uint8_t hit_cooldown;
+} __attribute__((packed)) SwordSync;
+
 typedef struct NetStatePacket {
     NetHeader  header;
     PlayerSync p0;
     PlayerSync p1;
+    SwordSync  swords[4]; // authoritative thrown sword state
     uint8_t    game_state; // 0=waiting, 1=playing, 2=round_over
     uint8_t    p0_score;
     uint8_t    p1_score;

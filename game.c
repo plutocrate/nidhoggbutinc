@@ -272,6 +272,23 @@ void game_fixed_update(GameState *gs) {
                 gs->players[1].stun_timer = sp.p1.stun_timer;
             }
 
+            // Deserialize authoritative sword state from host.
+            // Client does NOT simulate swords locally — host is the only authority.
+            for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
+                const SwordSync *ss = &sp.swords[i];
+                ThrowingSword *sw   = &gs->swords[i];
+                sw->pos.x       = ss->px;
+                sw->pos.y       = ss->py;
+                sw->vel.x       = ss->vx;
+                sw->vel.y       = ss->vy;
+                sw->angle       = ss->angle;
+                sw->angle_vel   = ss->angle_vel;
+                sw->active      = ss->active != 0;
+                sw->owner       = (int)ss->owner;
+                sw->rebounding  = ss->rebounding != 0;
+                sw->hit_cooldown= (int)ss->hit_cooldown;
+            }
+
             // NOTE: has_sword is NOT applied here. It is applied AFTER player_update
             // so the local throw animation clears has_sword immediately and the host
             // packet from the previous frame cannot overwrite it back.
@@ -305,26 +322,26 @@ void game_fixed_update(GameState *gs) {
         }
     }
 
-    // Spawn thrown sword on first frame of throw state
-    for (int pid = 0; pid < 2; pid++) {
-        Player *p = &gs->players[pid];
-        if (p->state == STATE_THROW && p->state_timer == 7) {
-            for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
-                if (!gs->swords[i].active) {
-                    combat_throw_sword(p, &gs->swords[i]);
-                    break;
+    // Sword simulation and combat: HOST/LOCAL only.
+    // CLIENT receives authoritative sword positions from NetStatePacket — no local sim.
+    CombatResult combat_result = {HIT_NONE, HIT_NONE, false};
+    if (gs->mode != MODE_CLIENT) {
+        // Spawn thrown sword on first frame of throw state
+        for (int pid = 0; pid < 2; pid++) {
+            Player *p = &gs->players[pid];
+            if (p->state == STATE_THROW && p->state_timer == 7) {
+                for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
+                    if (!gs->swords[i].active) {
+                        combat_throw_sword(p, &gs->swords[i]);
+                        break;
+                    }
                 }
             }
         }
-    }
 
-    combat_update_thrown_swords(gs->swords, MAX_THROWN_SWORDS,
-                                &gs->players[0], &gs->players[1], FIXED_DT);
+        combat_update_thrown_swords(gs->swords, MAX_THROWN_SWORDS,
+                                    &gs->players[0], &gs->players[1], FIXED_DT);
 
-    // Only HOST and LOCAL run authoritative combat resolution.
-    // CLIENT never kills players locally - all kills come from host via NetStatePacket.
-    CombatResult combat_result = {HIT_NONE, HIT_NONE, false};
-    if (gs->mode != MODE_CLIENT) {
         combat_result = combat_resolve(&gs->players[0], &gs->players[1],
                                        gs->swords, MAX_THROWN_SWORDS);
     }
@@ -378,6 +395,20 @@ void game_fixed_update(GameState *gs) {
         player_to_sync(&gs->players[1], &s1, gs->frame);
         sp.p0 = s0;
         sp.p1 = s1;
+        // Serialize thrown sword state so client renders/collides identically
+        for (int i = 0; i < MAX_THROWN_SWORDS; i++) {
+            const ThrowingSword *sw = &gs->swords[i];
+            sp.swords[i].px          = sw->pos.x;
+            sp.swords[i].py          = sw->pos.y;
+            sp.swords[i].vx          = sw->vel.x;
+            sp.swords[i].vy          = sw->vel.y;
+            sp.swords[i].angle       = sw->angle;
+            sp.swords[i].angle_vel   = sw->angle_vel;
+            sp.swords[i].active      = sw->active ? 1 : 0;
+            sp.swords[i].owner       = (uint8_t)sw->owner;
+            sp.swords[i].rebounding  = sw->rebounding ? 1 : 0;
+            sp.swords[i].hit_cooldown= (uint8_t)sw->hit_cooldown;
+        }
         sp.game_state = (uint8_t)gs->phase;
         sp.p0_score   = (uint8_t)gs->players[0].score;
         sp.p1_score   = (uint8_t)gs->players[1].score;
