@@ -169,30 +169,35 @@ void game_fixed_update(GameState *gs) {
     if (gs->phase == PHASE_ROUND_OVER) {
         if (gs->mode != MODE_LOCAL) {
             net_update(&gs->net, gs->frame);
-            // CLIENT: keep receiving state packets during round over
-            if (gs->mode == MODE_CLIENT) {
-                NetStatePacket sp;
-                if (net_recv_state(&gs->net, &sp)) {
-                    gs->players[0].score = sp.p0_score;
-                    gs->players[1].score = sp.p1_score;
-                    if ((GamePhase)sp.game_state == PHASE_PLAYING) {
-                        // Host already started next round
-                        PlayerSync s0 = sp.p0, s1 = sp.p1;
-                        player_from_sync(&gs->players[0], &s0);
-                        player_from_sync(&gs->players[1], &s1);
-                        gs->phase = PHASE_PLAYING;
-                        return;
-                    }
+        }
+        if (gs->mode == MODE_CLIENT) {
+            // CLIENT: only follow host for round transitions — never self-advance.
+            NetStatePacket rsp;
+            if (net_recv_state(&gs->net, &rsp)) {
+                gs->players[0].score = rsp.p0_score;
+                gs->players[1].score = rsp.p1_score;
+                GamePhase hp = (GamePhase)rsp.game_state;
+                if (hp == PHASE_PLAYING) {
+                    PlayerSync s0 = rsp.p0, s1 = rsp.p1;
+                    player_from_sync(&gs->players[0], &s0);
+                    player_from_sync(&gs->players[1], &s1);
+                    game_start_round(gs);
+                    gs->phase = PHASE_PLAYING;
+                } else if (hp == PHASE_MATCH_OVER) {
+                    gs->phase = PHASE_MATCH_OVER;
+                    gs->winner_id = (gs->players[0].score >= WIN_SCORE) ? 0 : 1;
                 }
             }
-        }
-        gs->round_over_timer--;
-        if (gs->round_over_timer <= 0) {
-            if (gs->players[0].score >= WIN_SCORE || gs->players[1].score >= WIN_SCORE) {
-                gs->phase = PHASE_MATCH_OVER;
-            } else {
-                game_start_round(gs);
-                gs->phase = PHASE_PLAYING;
+        } else {
+            // HOST / LOCAL: countdown then advance
+            gs->round_over_timer--;
+            if (gs->round_over_timer <= 0) {
+                if (gs->players[0].score >= WIN_SCORE || gs->players[1].score >= WIN_SCORE) {
+                    gs->phase = PHASE_MATCH_OVER;
+                } else {
+                    game_start_round(gs);
+                    gs->phase = PHASE_PLAYING;
+                }
             }
         }
         return;
@@ -200,11 +205,27 @@ void game_fixed_update(GameState *gs) {
 
     if (gs->phase == PHASE_MATCH_OVER) {
         if (gs->mode != MODE_LOCAL) net_update(&gs->net, gs->frame);
-        if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)) {
-            gs->players[0].score = 0;
-            gs->players[1].score = 0;
-            game_start_round(gs);
-            gs->phase = PHASE_PLAYING;
+        if (gs->mode == MODE_CLIENT) {
+            // CLIENT: follow host — watch for PHASE_PLAYING packet (host restarted match)
+            NetStatePacket msp;
+            if (net_recv_state(&gs->net, &msp)) {
+                if ((GamePhase)msp.game_state == PHASE_PLAYING) {
+                    gs->players[0].score = 0;
+                    gs->players[1].score = 0;
+                    PlayerSync s0 = msp.p0, s1 = msp.p1;
+                    player_from_sync(&gs->players[0], &s0);
+                    player_from_sync(&gs->players[1], &s1);
+                    game_start_round(gs);
+                    gs->phase = PHASE_PLAYING;
+                }
+            }
+        } else {
+            if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)) {
+                gs->players[0].score = 0;
+                gs->players[1].score = 0;
+                game_start_round(gs);
+                gs->phase = PHASE_PLAYING;
+            }
         }
         return;
     }
@@ -306,18 +327,19 @@ void game_fixed_update(GameState *gs) {
     };
     Input cur_inputs[2] = { p0_in, p1_in };
 
-    player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
+    // CLIENT: only simulate local player (p1). p0 position comes from host packet.
+    // Running player_update for p0 on the client would double-advance its position.
+    if (gs->mode != MODE_CLIENT) {
+        player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
+    }
     player_update(&gs->players[1], &p1_in, FIXED_DT, gs->platforms, gs->num_platforms);
 
-    // CLIENT: apply has_sword AFTER player_update.
-    // player_update sets has_sword=false when throw triggers. If we applied the host
-    // packet before, an old packet (has_sword=true) would overwrite it back immediately.
-    // By applying after, the local change wins for this frame; next host packet confirms it.
+    // CLIENT: apply has_sword from host AFTER player_update.
+    // During the throw animation (STATE_THROW), player_update has already set
+    // has_sword=false locally. We trust the local value during the throw animation
+    // so it drops immediately. Outside of throw, host is authoritative.
     if (gs->mode == MODE_CLIENT && sp_fresh) {
-        // Skip correction if we just initiated a throw this exact frame
-        bool just_threw = (gs->players[1].state == STATE_THROW &&
-                           gs->players[1].state_timer == 7);
-        if (!just_threw) {
+        if (gs->players[1].state != STATE_THROW) {
             gs->players[1].has_sword = sp.p1.has_sword != 0;
         }
     }
