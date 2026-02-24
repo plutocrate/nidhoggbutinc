@@ -228,37 +228,22 @@ void game_fixed_update(GameState *gs) {
         net_push_local_input(&gs->net, &p1_in);
         net_get_remote_input(&gs->net, gs->frame, &p0_in);
         net_update(&gs->net, gs->frame);
+    }
 
-        // Apply host state for the REMOTE player (p0) only, before simulation.
-        // We NEVER overwrite p1 (local player) position/velocity so jump/movement
-        // is instantly responsive via local prediction.
-        NetStatePacket sp;
-        if (net_recv_state(&gs->net, &sp)) {
-            // Remote player: always snap to host truth
+    // --- CLIENT: receive and partially apply host state packet ---
+    // Declared at function scope so it's accessible both before and after player_update.
+    NetStatePacket sp;
+    bool sp_fresh = false;
+    if (gs->mode == MODE_CLIENT) {
+        sp_fresh = net_recv_state(&gs->net, &sp);
+        if (sp_fresh) {
+            // Remote player (p0): snap to host truth before simulation runs.
             PlayerSync s0 = sp.p0;
             player_from_sync(&gs->players[0], &s0);
 
-            // Local player (p1): only sync has_sword and combat state from host.
-            // Preserving pos/vel means local prediction keeps working.
-            // has_sword must come from host to stay authoritative (throw/pickup).
-            gs->players[1].has_sword   = sp.p1.has_sword != 0;
-            gs->players[1].stun_timer  = sp.p1.stun_timer;
-            if (sp.p1.state == (uint8_t)STATE_STUNNED)
-                gs->players[1].state = STATE_STUNNED;
-
-            // Death: accept from host, never kill locally
-            if (sp.p1.state == (uint8_t)STATE_DEAD && gs->players[1].state != STATE_DEAD) {
-                player_kill(&gs->players[1]);
-            }
-            // Respawn: host says we're alive again, accept full state
-            if (sp.p1.state != (uint8_t)STATE_DEAD && gs->players[1].state == STATE_DEAD) {
-                PlayerSync s1 = sp.p1;
-                player_from_sync(&gs->players[1], &s1);
-            }
-
+            // Scores and game phase from host
             gs->players[0].score = sp.p0_score;
             gs->players[1].score = sp.p1_score;
-
             GamePhase host_phase = (GamePhase)sp.game_state;
             if (host_phase == PHASE_ROUND_OVER && gs->phase == PHASE_PLAYING) {
                 gs->phase = PHASE_ROUND_OVER;
@@ -271,6 +256,25 @@ void game_fixed_update(GameState *gs) {
                 game_start_round(gs);
                 gs->phase = PHASE_PLAYING;
             }
+
+            // Local player (p1) death/respawn: must be applied before player_update
+            // so the dead state is consistent going into simulation.
+            if (sp.p1.state == (uint8_t)STATE_DEAD && gs->players[1].state != STATE_DEAD) {
+                player_kill(&gs->players[1]);
+            } else if (sp.p1.state != (uint8_t)STATE_DEAD && gs->players[1].state == STATE_DEAD) {
+                PlayerSync s1 = sp.p1;
+                player_from_sync(&gs->players[1], &s1);
+            }
+
+            // Stun from host (got parried): apply before simulation
+            if (sp.p1.state == (uint8_t)STATE_STUNNED && gs->players[1].state != STATE_DEAD) {
+                gs->players[1].state = STATE_STUNNED;
+                gs->players[1].stun_timer = sp.p1.stun_timer;
+            }
+
+            // NOTE: has_sword is NOT applied here. It is applied AFTER player_update
+            // so the local throw animation clears has_sword immediately and the host
+            // packet from the previous frame cannot overwrite it back.
         }
     }
 
@@ -288,8 +292,20 @@ void game_fixed_update(GameState *gs) {
     player_update(&gs->players[0], &p0_in, FIXED_DT, gs->platforms, gs->num_platforms);
     player_update(&gs->players[1], &p1_in, FIXED_DT, gs->platforms, gs->num_platforms);
 
-    // Spawn thrown sword: both host and client spawn locally for instant visual feedback.
-    // has_sword is authoritative from host so they stay in sync.
+    // CLIENT: apply has_sword AFTER player_update.
+    // player_update sets has_sword=false when throw triggers. If we applied the host
+    // packet before, an old packet (has_sword=true) would overwrite it back immediately.
+    // By applying after, the local change wins for this frame; next host packet confirms it.
+    if (gs->mode == MODE_CLIENT && sp_fresh) {
+        // Skip correction if we just initiated a throw this exact frame
+        bool just_threw = (gs->players[1].state == STATE_THROW &&
+                           gs->players[1].state_timer == 7);
+        if (!just_threw) {
+            gs->players[1].has_sword = sp.p1.has_sword != 0;
+        }
+    }
+
+    // Spawn thrown sword on first frame of throw state
     for (int pid = 0; pid < 2; pid++) {
         Player *p = &gs->players[pid];
         if (p->state == STATE_THROW && p->state_timer == 7) {
@@ -313,7 +329,7 @@ void game_fixed_update(GameState *gs) {
                                        gs->swords, MAX_THROWN_SWORDS);
     }
 
-    // Audio: fire based on state transitions (pre vs post simulation)
+    // Audio: fire sound triggers based on state transitions and combat result
     audio_update(&gs->audio, gs->players, prev_states, prev_on_ground,
                  combat_result, cur_inputs);
 
